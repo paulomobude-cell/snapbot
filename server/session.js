@@ -304,19 +304,19 @@ export default class Session extends EventEmitter {
     });
     if (!items) return { captured: false, reason: "Conversation not rendered" };
 
-    const buffers = await this.run(() => this.readMediaBuffers(items));
+    const buffers = await this.run(() => this.readMediaBuffers(items, { allowNetwork: interactive }));
     const { seen } = this.store.sync(chatId, items, { preserve: true, reconcileMissing: false });
-    await this.captureMedia(chatId, seen, buffers);
+    await this.captureMedia(chatId, seen, buffers, { allowNetwork: interactive });
     return { captured: true, messageCount: this.store.getMessages(chatId).filter(m => m.kind !== "status").length };
   }
 
   // decrypts chat media into buffers keyed by content hash; tags each item with
   // its sha256 (blob URLs change every page load, so content is the stable id)
-  async readMediaBuffers(items) {
+  async readMediaBuffers(items, { allowNetwork = false } = {}) {
     const buffers = new Map();
     for (const item of items) {
       if (item.kind !== "media") continue;
-      if (!item.src || !/^(blob:|data:)/i.test(item.src)) continue;
+      if (!item.src || (!allowNetwork && !/^(blob:|data:)/i.test(item.src))) continue;
       if (this.shaBySrc.has(item.src)) {
         item.sha256 = this.shaBySrc.get(item.src);
         continue;
@@ -348,7 +348,7 @@ export default class Session extends EventEmitter {
   // Stores media for live messages in a consented chat that don't have it yet:
   // chat photos/videos from their blob, and tap-to-view snaps by opening them
   // (opening marks them viewed on Snapchat, same as if you opened the snap).
-  async captureMedia(chatId, seen, buffers) {
+  async captureMedia(chatId, seen, buffers, { allowNetwork = false } = {}) {
     let snapsOpened = 0;
     for (const [id, item] of seen) {
       if (item.kind !== "media" && item.kind !== "snap") continue;
@@ -373,7 +373,7 @@ export default class Session extends EventEmitter {
         if (viewOnce) snapsOpened++;
         read = await this.run(() =>
           this.readBuffer(() =>
-            viewOnce ? null : (/^(blob:|data:)/i.test(item.src || "") ? this.bot.readMedia(item.src) : null)
+            viewOnce ? null : (allowNetwork || /^(blob:|data:)/i.test(item.src || "") ? this.bot.readMedia(item.src) : null)
           )
         );
       }
