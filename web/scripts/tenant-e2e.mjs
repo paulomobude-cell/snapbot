@@ -11,6 +11,7 @@ import { openDb } from "../../server/db.js";
 const root = path.resolve(import.meta.dirname, "../..");
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "snapbot-tenant-e2e-"));
 const adminToken = crypto.randomBytes(32).toString("hex");
+const serviceToken = crypto.randomBytes(32).toString("hex");
 const port = await new Promise((resolve, reject) => {
   const server = net.createServer();
   server.once("error", reject);
@@ -63,7 +64,7 @@ try {
     cwd: root,
     env: {
       ...process.env, PORT: String(port), DATA_DIR: dataDir, MOCK: "true",
-      API_TOKEN: "MASTER_SERVICE_TOKEN_MUST_NEVER_AUTHENTICATE_A_USER",
+      API_TOKEN: serviceToken,
       ADMIN_API_TOKEN: adminToken, SECRET_KEY: "fixed-secret",
       CORS_ORIGIN: "http://localhost:5173", MAX_ACCOUNTS: "10",
     },
@@ -90,7 +91,6 @@ try {
   assert.notEqual(keyA, keyB);
   const aSocket = await connect(keyA);
   const bSocket = await connect(keyB);
-  const fakeMaster = await connect(keyA);
   const createA = await call(aSocket, "account:create", { label: "A's Snapchat" });
   const createB = await call(bSocket, "account:create", { label: "B's Snapchat" });
   assert.ok(createA.ok && createB.ok);
@@ -100,7 +100,7 @@ try {
   assert.deepEqual(listA.body.map(x => x.id), [idA]);
   assert.deepEqual(listB.body.map(x => x.id), [idB]);
   assert.equal((await request("/api/accounts")).status, 401);
-  assert.equal((await request("/api/accounts", {}, "MASTER_SERVICE_TOKEN_MUST_NEVER_AUTHENTICATE_A_USER")).status, 401);
+  assert.equal((await request("/api/accounts", {}, serviceToken)).status, 401);
   assert.equal((await post("/api/accounts", { label: "unauthorized" })).status, 401);
   assert.equal((await call(aSocket, "account:open", { accountId: idB })).ok, false);
   assert.equal((await call(aSocket, "account:remove", { accountId: idB })).ok, false);
@@ -108,6 +108,13 @@ try {
   assert.equal((await call(aSocket, "message:send", { accountId: idB, chatId: "sam", text: "hi" })).ok, false);
   assert.equal((await request("/api/accounts/" + idB + "/chats", {}, keyA)).status, 404);
   assert.equal((await request("/api/accounts/" + idB + "/events", {}, keyA)).status, 404);
+  // Prove unsolicited Socket.IO events stay inside the owning tenant room.
+  let crossTenantStatus = false;
+  aSocket.on("status", data => { if (data.accountId === idB) crossTenantStatus = true; });
+  const restarted = await call(bSocket, "account:restart", { accountId: idB });
+  assert.equal(restarted.ok, true);
+  await sleep(300);
+  assert.equal(crossTenantStatus, false, "User A must not receive user B's session events");
 
   const personal = await post("/api/auth/login", { phone: "15555550101", password: "secure-passphrase-A" });
   assert.equal(personal.status, 200);
@@ -122,6 +129,8 @@ try {
   assert.equal(info.body.legacy[0].id, "legacy");
   const claim = await post("/api/admin/claim", { userId: a.body.user.id, accountId: "legacy" }, undefined, { "x-admin-key": adminToken });
   assert.equal(claim.status, 200);
+  const usage = await request("/api/admin/users", {}, undefined, { "x-admin-key": adminToken });
+  assert.equal(usage.body.users.find(u => u.id === a.body.user.id).usage.archived, 1);
   assert.equal((await request("/api/accounts", {}, keyB)).body.length, 1);
   assert.equal((await request("/api/accounts", {}, keyA)).body.length, 2);
   const retained = await request("/api/accounts/legacy/chats/sam/messages", {}, keyA);
@@ -133,6 +142,10 @@ try {
     method: "DELETE", body: JSON.stringify({ confirmPhone: "15555550102" }),
   }, undefined, { "x-admin-key": adminToken });
   assert.equal(deleted.status, 200);
+  const audit = await request("/api/admin/audit", {}, undefined, { "x-admin-key": adminToken });
+  assert.equal(audit.status, 200);
+  assert.ok(audit.body.some(item => item.action === "claim"));
+  assert.ok(audit.body.some(item => item.action === "delete-user"));
   assert.equal((await request("/api/auth/me", {}, keyB)).status, 401);
   assert.equal((await request("/api/accounts", {}, keyA)).body.length, 2);
   assert.equal((await request("/api/accounts/legacy/chats/sam/messages", {}, keyA)).body[0].text, "previously archived");
