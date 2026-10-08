@@ -192,7 +192,10 @@ function Dashboard({ settings, user, onDisconnect }) {
     if (clickMode === "ask") rememberClickMode(selected.remember);
     if (selected.open) {
       call("chat:sync", { accountId, chatId: id, confirmReadRisk: true })
-        .then(result => { if (!result?.captured) toast(result?.reason || "Snapchat conversation could not be read", "error"); })
+        .then(result => {
+          if (!result?.captured) toast(result?.reason || "Snapchat conversation could not be read", "error");
+          else if (result.history?.truncated) toast("Saved visible content, but older chat history may be incomplete.", "error");
+        })
         .catch(error => toast(error.message, "error"));
     }
   };

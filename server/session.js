@@ -396,14 +396,18 @@ export default class Session extends EventEmitter {
         truncated: readResult.truncated ? 1 : 0, reordered: reordered ? 1 : 0,
         reason: readResult.stoppedBy || "single_view" });
     }
-    return { captured: true, messageCount: this.store.getMessages(chatId).filter(m => m.kind !== "status").length };
+    return {
+      captured: true, messageCount: this.store.getMessages(chatId).filter(m => m.kind !== "status").length,
+      history: { pages: readResult.pages || 1, reachedTop: Boolean(readResult.reachedTop),
+        truncated: Boolean(readResult.truncated), reason: readResult.stoppedBy || "single_view" },
+    };
   }
 
   getBackfill() {
     if (!this.backfill) return null;
-    const { id, status, total, completed, captured, failed, currentChatId,
+    const { id, status, total, completed, captured, partial, failed, currentChatId,
       errors, cancelRequested, startedAt, finishedAt } = this.backfill;
-    return { id, status, total, completed, captured, failed, currentChatId,
+    return { id, status, total, completed, captured, partial, failed, currentChatId,
       errors: [...errors], cancelRequested, startedAt, finishedAt };
   }
 
@@ -419,7 +423,7 @@ export default class Session extends EventEmitter {
     const ids = validateBackfillSelection(chatIds, this.chats);
     this.backfill = {
       id: crypto.randomUUID(), status: "running", total: ids.length, completed: 0,
-      captured: 0, failed: 0, currentChatId: null, errors: [],
+      captured: 0, partial: 0, failed: 0, currentChatId: null, errors: [],
       cancelRequested: false, startedAt: Date.now(), finishedAt: null,
     };
     const job = this.backfill;
@@ -445,8 +449,10 @@ export default class Session extends EventEmitter {
         this.publishBackfill();
         try {
           const result = await this.syncChat(chatId, { interactive: true, fromBackfill: true });
-          if (result.captured) job.captured++;
-          else {
+          if (result.captured) {
+            job.captured++;
+            if (result.history?.truncated) job.partial++;
+          } else {
             job.failed++;
             job.errors.push({ chatId, error: result.reason || "Conversation not rendered" });
           }

@@ -35,4 +35,16 @@ root=false; visible=null; allowRow=true; title.click=async()=>{titleClicks++; th
 bot.page.waitForSelector=async()=>root ? {} : Promise.reject(Error("not visible yet"));
 assert.equal(await bot.openChat("c1"),true,"fallback row works after title click throws");
 assert.equal(bot.lastChatOpenReason,null);
-console.log("Snapchat openChat fallback checks passed: exact row retry, visible root, safe refusal, detached title.");
+// If Live Screen has an active search, the explicit chat click first clears it.
+const searched = new SnapBot();
+let cleared = false, clearCount = 0;
+searched.visibleChatId = async () => null;
+searched.clearSnapchatSearch = async () => { clearCount++; cleared = true; return true; };
+searched.page = {
+  $: async selector => selector.includes("title-c1") && cleared
+    ? { click: async () => {} } : null,
+  waitForSelector: async () => ({}),
+};
+assert.equal(await searched.openChat("c1"),true);
+assert.equal(clearCount,1,"restore regular chat list only when target ID is absent");
+console.log("Snapchat openChat fallback checks passed: exact row retry, visible root, safe refusal, detached title, search recovery.");

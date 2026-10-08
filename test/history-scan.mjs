@@ -38,4 +38,15 @@ await assert.rejects(() => collectHistory({
   restore: async () => { restoredAfterError = true; },
 }),/scroll failed/);
 assert.equal(restoredAfterError,true);
-console.log("History merge passed: older-first chronological order, retained duplicates, bounded fallback and restoration.");
+let captureCount=0;
+const photo={kind:"media",from:"Friend",src:"blob:photo",text:"",sha256:"xyz"};
+const mediaResult=await collectHistory({
+  firstItems:[photo],
+  capture:async()=>{captureCount++;return new Map([["xyz",{buffer:Buffer.from([1,2,3])}]]);},
+  scrollOlder:async()=>({moved:false,atTop:true}),
+  restore:async()=>{},
+});
+assert.equal(mediaResult.buffers.size,1);
+assert.equal(mediaResult.buffers.get("xyz").buffer.length,3);
+assert.equal(captureCount,1,"capture media before the page can unmount it");
+console.log("History merge passed: older-first chronology, retained duplicates, bounded fallback and restoration.");

@@ -72,6 +72,7 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
           try {
             const result = await onInteractiveSync();
             if (!result?.captured) toast(result?.reason || "Conversation was not available", "error");
+            else if (result.history?.truncated) toast("Saved what Snapchat rendered; older history could still be incomplete.", "error");
           } catch (error) { toast(error.message, "error"); }
           finally { setSyncing(false); }
         }}>{syncing ? "Syncing…" : "Open & sync (may mark read)"}</button>

@@ -34,6 +34,24 @@ try {
   assert.equal(stored.lastError,null);
   store.sync("friend",[],{preserve:true,reconcileMissing:false});
   assert.equal(store.getMessages("friend").length,3,"partial passive snapshot never flags historical messages gone");
+  // Status notices can arrive first when Snapchat initially renders a
+  // fragment of the conversation. Reconcile chronology only after ALL stored
+  // items have been observed; preserve historical rows and linked media.
+  store.sync("ordering",[
+    {kind:"notice",from:"Snapchat",isMe:false,text:"YOU SCREEN RECORDED CHAT!",time:""},
+    {kind:"notice",from:"Snapchat",isMe:false,text:"YOU TOOK A SCREENSHOT!",time:""},
+  ]);
+  store.sync("ordering",[{kind:"media",from:"Friend",isMe:false,text:"",sha256:"older-video",mediaType:"video"}]);
+  assert.deepEqual(store.getMessages("ordering").map(m=>m.kind),["status","status","media"]);
+  const complete=store.sync("ordering",[
+    {kind:"media",from:"Friend",isMe:false,text:"",sha256:"older-video",mediaType:"video"},
+    {kind:"notice",from:"Snapchat",isMe:false,text:"YOU SCREEN RECORDED CHAT!",time:""},
+    {kind:"notice",from:"Snapchat",isMe:false,text:"YOU TOOK A SCREENSHOT!",time:""},
+  ]);
+  assert.equal(store.reorderObserved("ordering",[...complete.seen.keys()]),true);
+  assert.deepEqual(store.getMessages("ordering").map(m=>m.kind),["media","status","status"]);
+  assert.equal(store.reorderObserved("ordering",[...complete.seen.keys()].slice(1)),false,
+    "partial viewport must not reorder unseen archive content");
   // Regression for uploaded Railway NoSuchBucket report: the bucket name must
   // be used literally, never derived from the API-token name. Once corrected,
   // a new upload attempt succeeds without changing account or archive rows.
