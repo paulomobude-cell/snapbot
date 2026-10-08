@@ -1,9 +1,22 @@
 import path from "path";
+import fs from "node:fs";
 import crypto from "crypto";
 import { DatabaseSync } from "node:sqlite";
 
 export function openDb(dataDir) {
   const db = new DatabaseSync(path.join(dataDir, "snapbot.db"));
+  // A one-time SQLite-consistent snapshot before introducing Comnexus users.
+  // VACUUM INTO captures outstanding WAL changes; a plain file copy would not.
+  // If space is exhausted, abort rather than risk modifying the only archive.
+  const hasExistingAccounts = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'").get();
+  const alreadyMigrated = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='app_users'").get();
+  if (hasExistingAccounts && !alreadyMigrated) {
+    const backupDir = path.join(dataDir, "backups");
+    fs.mkdirSync(backupDir, { recursive: true });
+    const backupFile = path.join(backupDir, "snapbot-pre-comnexus-" + Date.now() + ".sqlite");
+    db.exec("VACUUM INTO '" + backupFile.replace(/'/g, "''") + "'");
+    console.log("Pre-Comnexus SQLite backup created:", backupFile);
+  }
   // v3 archives messages instead of dropping them; older message tables only
   // held what Snapchat still showed, so they're rebuilt from the next sync
   if (db.prepare("PRAGMA user_version").get().user_version < 3) {
