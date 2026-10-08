@@ -33,6 +33,31 @@ try {
   assert.deepEqual(items.filter(x => x.kind === "text").map(x => x.text), ["hello there","I can see these"]);
   assert.equal(items.at(-1).src, "blob:photo");
   assert.ok(items.every(x => x.from === "Friend"));
+
+  // Snapchat can use legacy <li> for captions while saved images/videos sit
+  // outside that list. The reader must not stop after the first text message.
+  const caption = el("span", "Isn't this winifred your sister?");
+  caption.matches = selector => selector === "span.ogn1z";
+  const legacyBubble = el("li", "");
+  legacyBubble.querySelectorAll = selector => selector === "span.ogn1z, img, video, button, [role='button']" ? [caption] : [];
+  const legacyRow = el("li", "");
+  legacyRow.querySelector = () => null;
+  legacyRow.querySelectorAll = selector => selector === "li" ? [legacyBubble] : [];
+  const savedPhoto = el("img", "", { src:"blob:saved-photo", width:480, height:620 });
+  const savedVideo = el("video", "", { src:"blob:saved-video", width:400, height:300 });
+  savedVideo.currentSrc = "blob:saved-video";
+  globalThis.document = { getElementById: id => id === "cv-friend" ? ({
+    textContent: "caption and saved media",
+    querySelectorAll: selector => selector === "li.T1yt2" ? [legacyRow] :
+      selector === "img, video, [style*='background-image']" ? [savedPhoto, savedVideo] :
+      selector === "*" ? [savedPhoto, legacyRow, legacyBubble, caption, savedVideo] : [],
+  }) : null };
+  const combined = extractVisibleMessages("friend", "Friend");
+  assert.deepEqual(combined.map(m=>m.kind), ["media","text","media"],
+    "image before caption, then video in DOM order with legacy text present");
+  assert.deepEqual(combined.filter(m=>m.kind==="media").map(m=>m.src),
+    ["blob:saved-photo","blob:saved-video"]);
+  assert.ok(combined.every(m=>m.from==="Friend"));
   const statusItems = [
     el("span", "You saved a video"),
     el("span", "You took a screenshot of the chat"),

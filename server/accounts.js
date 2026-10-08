@@ -106,7 +106,7 @@ export default class AccountManager extends EventEmitter {
     );
     store.on("message:new", (message) => {
       send("message:new", async () => ({ message: (await this.withUrls([message]))[0] }));
-      if (!message.isMe) this.log(id, "new", message.chatId, `${chatName(message.chatId)}: sent ${what(message)}`);
+      if (!message.isMe && message.kind !== "status") this.log(id, "new", message.chatId, `${chatName(message.chatId)}: sent ${what(message)}`);
     });
     store.on("message:updated", (message) => {
       send("message:updated", async () => ({ message: (await this.withUrls([message]))[0] }));

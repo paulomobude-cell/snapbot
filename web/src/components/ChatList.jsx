@@ -25,8 +25,9 @@ export default function ChatList({ account, status, error, chats, messages, unre
       .map((chat) => {
         // prefer what this browser holds, else the server's preview
         const local = messages[chat.id];
-        const last = local?.length ? local[local.length - 1] : chat.preview?.last;
-        const count = local?.length ?? chat.preview?.count ?? 0;
+        const actual = local?.filter(m => m.kind !== "status" && m.kind !== "notice");
+        const last = actual?.length ? actual[actual.length - 1] : chat.preview?.last;
+        const count = actual?.length ?? chat.preview?.count ?? 0;
         return { chat, last, count, unread: unread[chat.id]?.length || 0 };
       })
       .filter((r) => !q || r.chat.name.toLowerCase().includes(q) || (r.last?.text || "").toLowerCase().includes(q))

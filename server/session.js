@@ -324,16 +324,26 @@ export default class Session extends EventEmitter {
       throw new Error("Archive job running. Wait or cancel it first.");
     const chat = this.chats.find((c) => c.id === chatId);
     if (!chat) return { captured: false, reason: "Chat not discovered" };
-    const items = await this.run(async () => {
+    const readResult = await this.run(async () => {
       if (interactive) {
-        if (!(await this.bot.openChat(chatId))) return null;
-        await delay(650);
+        if (!(await this.bot.openChat(chatId)))
+          return { items: null, reason: this.bot.lastChatOpenReason || "Could not open conversation in Snapchat Web" };
       } else if (!this.bot.visibleChatId || (await this.bot.visibleChatId()) !== chatId) {
-        return null;
+        return { items: null, reason: "Conversation is not already visible in Snapchat Web" };
       }
-      return this.bot.readMessages(chatId, chat.name, this.config.patterns);
+      // Opening a chat and rendering its decrypted content are separate steps.
+      // Do not use a fixed 650 ms guess; wait for a valid snapshot, but never
+      // mark an empty/unrendered DOM as deleted chat history.
+      for (let attempt = 0; attempt < (interactive ? 10 : 1); attempt++) {
+        const items = await this.bot.readMessages(chatId, chat.name, this.config.patterns);
+        if (items !== null) return { items };
+        if (interactive && attempt < 9) await delay(600);
+      }
+      return { items: null, reason: "Snapchat opened this chat, but its messages did not render in time. Check Live Screen and retry." };
     });
-    if (!items) return { captured: false, reason: "Conversation not rendered" };
+    if (!readResult?.items)
+      return { captured: false, reason: readResult?.reason || "Conversation not rendered" };
+    const items = readResult.items;
 
     const buffers = await this.run(() => this.readMediaBuffers(items, { allowNetwork: interactive }));
     const { seen } = this.store.sync(chatId, items, { preserve: true, reconcileMissing: false });

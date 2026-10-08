@@ -141,8 +141,9 @@ export function useBackend(settings, { onMessage }) {
     s.on("message:new", ({ accountId, message }) => {
       const view = handlers.current.view;
       const looking = view?.accountId === accountId && view?.chatId === message.chatId && !document.hidden;
-      dispatch({ type: "new", accountId, message, markUnread: !message.isMe && !looking });
-      if (!message.isMe && !looking) handlers.current.onMessage?.(accountId, message);
+      const realMessage = message.kind !== "status" && message.kind !== "notice";
+      dispatch({ type: "new", accountId, message, markUnread: realMessage && !message.isMe && !looking });
+      if (realMessage && !message.isMe && !looking) handlers.current.onMessage?.(accountId, message);
     });
     s.on("message:updated", ({ accountId, message }) => dispatch({ type: "updated", accountId, message }));
     s.on("message:removed", (d) => dispatch({ type: "removed", ...d }));
