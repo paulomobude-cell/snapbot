@@ -23,6 +23,12 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
   const output = [];
   const outputNodes = []; // DOM ordering, so saved media stays near its caption
   const seenMediaNodes = new Set();
+  const seenTextNodes = new Set();
+  const quoteRoots = new Set();
+  const withinQuote = node => {
+    for (const quote of quoteRoots) if (node === quote || quote.contains?.(node)) return true;
+    return false;
+  };
   const append = (item, node) => {
     output.push(item);
     outputNodes.push(node);
@@ -53,7 +59,8 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
 
   const addText = (text, node, forcedSender) => {
     const value = String(text || "").replace(/\s+/g, " ").trim();
-    if (!value || value.length > 6000 || relativeTimeRe.test(value)) return;
+    if (!value || value.length > 6000 || relativeTimeRe.test(value) || seenTextNodes.has(node) || withinQuote(node)) return;
+    seenTextNodes.add(node);
     const from = forcedSender || senderFrom(node);
     const base = { from, isMe: from === "Me", time: currentTime };
     if (deletedRe.test(value) && value.length < 120) {
@@ -84,7 +91,7 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
     return !control || !/(tap|click) to view|new snap|tap to replay|received snap/i.test(label);
   };
   const addMedia = (node, forcedSender) => {
-    if (seenMediaNodes.has(node) || !mediaContainer(node)) return;
+    if (seenMediaNodes.has(node) || withinQuote(node) || !mediaContainer(node)) return;
     let src = null;
     let mediaType = "image";
     if (node.tagName === "IMG") {
@@ -111,6 +118,96 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
     const from = forcedSender || senderFrom(node);
     append({ kind: "media", from, isMe: from === "Me", time: currentTime, text: "", src, mediaType }, node);
   };
+
+  // A Snapchat reply visually contains a quote of an earlier message. The
+  // quote sender/text are metadata, NOT new independent messages. Capture one
+  // reply bubble and keep the quoted preview nested inside it.
+  const normalize = value => String(value || "").replace(/\s+/g, " ").trim();
+  const leaves = el => [...(el?.querySelectorAll?.("*") || [])]
+    .filter(node => ["SPAN", "DIV", "P", "LABEL"].includes(node.tagName))
+    .filter(node => ![...(node.children || [])].some(child => child.textContent?.trim()))
+    .filter(node => normalize(node.textContent));
+  const quotedSelector = "blockquote, [data-quoted-message], [data-reply-quote], [data-testid*='quote' i], [data-testid*='reply-preview' i], [class*='quoted' i], [class*='quote-preview' i], [class*='reply-preview' i]";
+  const looksQuoted = node => {
+    if (node.matches?.(quotedSelector)) return true;
+    if (!["DIV", "BLOCKQUOTE", "SECTION"].includes(node.tagName)) return false;
+    const inner = leaves(node);
+    if (inner.length < 2 || inner.length > 12) return false;
+    const first = normalize(inner[0]?.textContent);
+    if (!(/^(me|you)$/i.test(first) || first.toLowerCase() === chatName.toLowerCase())) return false;
+    // Snapchat sometimes puts the colored quote stripe on a child wrapper,
+    // rather than on the outer inset. Keep this tightly gated by an author
+    // label and small nested card to avoid misidentifying whole conversations.
+    const leftBorder = parseFloat(getComputedStyle(node).borderLeftWidth || "0");
+    return leftBorder >= 2 || [...(node.children || [])].some(child =>
+      parseFloat(getComputedStyle(child).borderLeftWidth || "0") >= 2
+    );
+  };
+  const cleanName = value => /^(me|you)$/i.test(value) ? "Me"
+    : value.toLowerCase() === chatName.toLowerCase() ? chatName : value;
+  const outside = (parent, quote) => leaves(parent)
+    .filter(el => !quote.contains?.(el))
+    .filter(el => !el.closest?.("header, nav, button, [role='button'], time, [class*='timestamp' i], [class*='sender' i]"))
+    .filter(el => !relativeTimeRe.test(normalize(el.textContent)))
+    .filter(el => {
+      const value = normalize(el.textContent);
+      return value !== "ME" && value.toLowerCase() !== chatName.toLowerCase();
+    });
+  const senderForReply = (container, quote) => {
+    const wrapper = container.closest?.("li, [role='listitem'], [data-message-id]") || container;
+    const explicitNode = wrapper.closest?.("[data-sender], [data-message-sender]") || wrapper;
+    const explicit = explicitNode.getAttribute?.("data-sender") || explicitNode.getAttribute?.("data-message-sender");
+    if (explicit) return /^(me|you|self|outgoing)$/i.test(explicit) ? "Me" : chatName;
+    const header = [...(wrapper.querySelectorAll?.("header .nonIntl") || [])]
+      .find(node => !quote.contains?.(node) && normalize(node.textContent));
+    if (header) return cleanName(normalize(header.textContent));
+    const border = wrapper.querySelector?.(".KB4Aq") || wrapper.closest?.(".KB4Aq");
+    if (border && getComputedStyle(border).borderColor === ME) return "Me";
+    if (wrapper.matches?.("[class*='outgoing' i], [class*='sent' i], [class*='mine' i]") ||
+        wrapper.closest?.("[class*='outgoing' i], [class*='sent' i], [class*='mine' i]")) return "Me";
+    return chatName;
+  };
+  const handledContainers = new Set();
+  const quoteCandidates = [...root.querySelectorAll("*")].filter(looksQuoted)
+    .sort((a, b) => leaves(a).length - leaves(b).length);
+  for (const quote of quoteCandidates) {
+    if (withinQuote(quote)) continue;
+    const inner = leaves(quote);
+    if (!inner.length) continue;
+    const speaker = inner.find(el => /^(me|you)$/i.test(normalize(el.textContent)) ||
+      normalize(el.textContent).toLowerCase() === chatName.toLowerCase());
+    const original = inner.filter(el => el !== speaker).map(el => normalize(el.textContent))
+      .filter(Boolean).join("\n").slice(0,2000);
+    const quotedMedia = quote.querySelector?.("video") ? "video"
+      : quote.querySelector?.("img") ? "image" : null;
+    if (!original && !quotedMedia) continue;
+    let container = quote.parentElement;
+    let replyLeaves = [];
+    for (let depth = 0; container && container !== root && depth < 4; depth++, container = container.parentElement) {
+      if (handledContainers.has(container)) break;
+      replyLeaves = outside(container, quote);
+      if (replyLeaves.length) break;
+      if (container.matches?.("li.T1yt2, [data-message-id], [data-testid*='message' i], [role='listitem']")) break;
+    }
+    if (!container || container === root || !replyLeaves.length || handledContainers.has(container)) continue;
+    const message = replyLeaves.map(el => normalize(el.textContent)).filter(Boolean).join("\n").slice(0,6000);
+    if (!message) continue;
+    const from = senderForReply(container, quote);
+    append({kind:"text",from,isMe:from==="Me",time:currentTime,text:message,
+      replyTo:{from:cleanName(normalize(speaker?.textContent) || "Unknown"),text:original,mediaType:quotedMedia}
+    },replyLeaves[0]);
+    handledContainers.add(container);
+    quoteRoots.add(quote);
+    for (const el of inner) seenTextNodes.add(el);
+    for (const el of replyLeaves) seenTextNodes.add(el);
+    // Snapchat may render a separate "ME" or friend's name label outside
+    // the inner quote. It is metadata, not a one-word chat message.
+    for (const el of leaves(container)) {
+      const label = normalize(el.textContent);
+      if (/^(me|you)$/i.test(label) || label.toLowerCase() === chatName.toLowerCase())
+        seenTextNodes.add(el);
+    }
+  }
 
   const legacy = root.querySelectorAll("li.T1yt2");
   for (const row of legacy) {
@@ -141,7 +238,9 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
   // may render text using the legacy markup but images outside those <li>
   // blocks. The old early return silently dropped saved images/videos.
   for (const node of root.querySelectorAll("img, video, [style*='background-image']")) addMedia(node);
-  if (output.length) return inDocumentOrder();
+  // Do NOT return just because the legacy pass found media or status entries:
+  // quoted text and captions may use semantic leaves outside old span.ogn1z.
+  // Each DOM text node is only processed once across both passes.
 
   // Newer Snapchat UI versions can replace the legacy "li.T1yt2" and
   // "span.ogn1z" classes. Traverse actual text/image leaves of the selected
@@ -156,7 +255,7 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
   const dateOnly = /^(today|yesterday|tomorrow|mon(day)?|tue(sday)?|wed(nesday)?|thu(rsday)?|fri(day)?|sat(urday)?|sun(day)?|\d{1,2}:\d{2}(?:\s*[ap]m)?|received|delivered|opened|screenshotted|saved in chat)$/i;
   const seenText = new Map();
   for (const el of root.querySelectorAll("*")) {
-    if (isIgnored(el) || !isVisible(el)) continue;
+    if (isIgnored(el) || !isVisible(el) || withinQuote(el) || seenTextNodes.has(el)) continue;
     if (el.tagName === "IMG" || el.tagName === "VIDEO") {
       addMedia(el);
       continue;

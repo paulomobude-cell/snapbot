@@ -130,8 +130,11 @@ export function openDb(dataDir) {
   const mediaColumns = db.prepare("PRAGMA table_info(media)").all().map(row => row.name);
   if (!mediaColumns.includes("retry_at")) db.exec("ALTER TABLE media ADD COLUMN retry_at INTEGER");
   if (!mediaColumns.includes("last_error")) db.exec("ALTER TABLE media ADD COLUMN last_error TEXT");
+  // Add nullable reply metadata without rewriting any existing archive row.
+  const messageColumns = db.prepare("PRAGMA table_info(messages)").all().map(col => col.name);
+  if (!messageColumns.includes("reply_to")) db.exec("ALTER TABLE messages ADD COLUMN reply_to TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS accounts_owner_idx ON accounts(owner_user_id)");
-  db.exec("PRAGMA user_version = 5");
+  db.exec("PRAGMA user_version = 6");
   return db;
 }
 

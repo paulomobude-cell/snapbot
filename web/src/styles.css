@@ -594,3 +594,15 @@ video.media { cursor: default; }
 .backfill-chat strong { overflow-wrap: anywhere; }
 .backfill-progress { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 11px; }
 .backfill-confirm { align-items: flex-start; line-height: 1.5; }
+
+/* Explicitly acknowledged chat-click read behavior; passive remains available. */
+.click-mode-toggle { white-space: nowrap; border: 1px solid var(--border); font-size: 11px; }
+.click-mode-toggle.on { border-color: var(--accent); }
+
+/* Quoted original text remains nested in the actual reply, never counted as a new message. */
+.reply-preview { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; margin-bottom: 8px;
+  border-left: 3px solid var(--them); border-radius: 6px;
+  background: color-mix(in srgb, currentColor 5%, transparent); min-width: 0; }
+.reply-preview-from { font-weight: 700; font-size: 11px; }
+.reply-preview-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; opacity: .85; }
+.reply-preview-media { font-size: 11px; opacity: .7; }

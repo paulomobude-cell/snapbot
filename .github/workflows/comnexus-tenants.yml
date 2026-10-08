@@ -23,6 +23,8 @@ jobs:
       - run: node test/login.mjs
       - run: node test/live-screen.mjs
       - run: node test/chat-reader.mjs
+      - run: node test/quoted-replies.mjs
+      - run: node test/history-scan.mjs
       - run: node test/open-chat.mjs
       - run: node test/render-retry.mjs
       - run: node test/diagnostics.mjs
@@ -33,6 +35,8 @@ jobs:
       - run: npm ci
         working-directory: web
       - run: node scripts/conversation-smoke.mjs
+        working-directory: web
+      - run: node scripts/chat-click-mode-smoke.mjs
         working-directory: web
       - run: node scripts/backend-url-smoke.mjs
         working-directory: web

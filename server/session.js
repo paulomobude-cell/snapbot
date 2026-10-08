@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import fs from "fs";
 import { validateBackfillSelection } from "./backfill-selection.js";
 import { diagnostic, classifyDiagnosticError } from "./diagnostics.js";
+import { collectHistory } from "./history-scan.js";
 import path from "path";
 import crypto from "crypto";
 import SnapBot from "../snapbot.js";
@@ -342,7 +343,26 @@ export default class Session extends EventEmitter {
       // The browser may take several attempts to render an opened conversation.
       for (let attempt = 0; attempt < (interactive ? 10 : 1); attempt++) {
         const items = await this.bot.readMessages(chatId, chat.name, this.config.patterns);
-        if (items !== null) return { items, attempts: attempt + 1 };
+        if (items !== null) {
+          if (interactive && this.bot.historyScroll) {
+            // Snapshots are read and media bytes collected BEFORE scrolling
+            // changes or unmounts the current virtualized viewport. Keep the
+            // entire user-approved scan serialized against other browser work.
+            const initial = await this.bot.historyScroll(chatId, "inspect").catch(() => null);
+            if (initial?.available) {
+              const history = await collectHistory({
+                firstItems: items,
+                read: () => this.bot.readMessages(chatId, chat.name, this.config.patterns),
+                capture: page => this.readMediaBuffers(page, { allowNetwork: true }),
+                scrollOlder: () => this.bot.historyScroll(chatId, "older"),
+                restore: () => this.bot.historyScroll(chatId, "restore", initial.scrollTop),
+                pause: delay,
+              });
+              return { ...history, attempts: attempt + 1 };
+            }
+          }
+          return { items, attempts: attempt + 1 };
+        }
         if (interactive && attempt < 9) await delay(600);
       }
       return { items: null, stage: "render", reason: "Snapchat opened this chat, but its messages did not render in time. Check Live Screen and retry." };
@@ -360,24 +380,34 @@ export default class Session extends EventEmitter {
       else if (item.kind === "media" && item.mediaType === "video") tally.video++;
       else if (item.kind === "media") tally.image++;
     }
-    const buffers = await this.run(() => this.readMediaBuffers(items, { allowNetwork: interactive }));
+    const buffers = readResult.buffers ||
+      await this.run(() => this.readMediaBuffers(items, { allowNetwork: interactive }));
     const { seen, added = [] } = this.store.sync(chatId, items, { preserve: true, reconcileMissing: false });
+    const reordered = readResult.pages > 1 && this.store.reorderObserved
+      ? this.store.reorderObserved(chatId, [...seen.keys()]) : false;
     const media = await this.captureMedia(chatId, seen, buffers, { allowNetwork: interactive });
     if (interactive || added.length || (media?.stored || 0) || (media?.unavailable || 0) || (media?.failed || 0)) {
       log("chat_sync", { ...tally, items: items.length, buffered: buffers.size, newMessages: added.length,
         stored: media?.stored || 0, reused: media?.reused || 0,
         unavailable: media?.unavailable || 0, failed: media?.failed || 0,
         viewOnceSkipped: media?.viewOnceSkipped || 0,
-        retryDeferred: media?.retryDeferred || 0, elapsedMs: Date.now() - started });
+        retryDeferred: media?.retryDeferred || 0, elapsedMs: Date.now() - started,
+        pages: readResult.pages || 1, reachedTop: readResult.reachedTop ? 1 : 0,
+        truncated: readResult.truncated ? 1 : 0, reordered: reordered ? 1 : 0,
+        reason: readResult.stoppedBy || "single_view" });
     }
-    return { captured: true, messageCount: this.store.getMessages(chatId).filter(m => m.kind !== "status").length };
+    return {
+      captured: true, messageCount: this.store.getMessages(chatId).filter(m => m.kind !== "status").length,
+      history: { pages: readResult.pages || 1, reachedTop: Boolean(readResult.reachedTop),
+        truncated: Boolean(readResult.truncated), reason: readResult.stoppedBy || "single_view" },
+    };
   }
 
   getBackfill() {
     if (!this.backfill) return null;
-    const { id, status, total, completed, captured, failed, currentChatId,
+    const { id, status, total, completed, captured, partial, failed, currentChatId,
       errors, cancelRequested, startedAt, finishedAt } = this.backfill;
-    return { id, status, total, completed, captured, failed, currentChatId,
+    return { id, status, total, completed, captured, partial, failed, currentChatId,
       errors: [...errors], cancelRequested, startedAt, finishedAt };
   }
 
@@ -393,7 +423,7 @@ export default class Session extends EventEmitter {
     const ids = validateBackfillSelection(chatIds, this.chats);
     this.backfill = {
       id: crypto.randomUUID(), status: "running", total: ids.length, completed: 0,
-      captured: 0, failed: 0, currentChatId: null, errors: [],
+      captured: 0, partial: 0, failed: 0, currentChatId: null, errors: [],
       cancelRequested: false, startedAt: Date.now(), finishedAt: null,
     };
     const job = this.backfill;
@@ -419,8 +449,10 @@ export default class Session extends EventEmitter {
         this.publishBackfill();
         try {
           const result = await this.syncChat(chatId, { interactive: true, fromBackfill: true });
-          if (result.captured) job.captured++;
-          else {
+          if (result.captured) {
+            job.captured++;
+            if (result.history?.truncated) job.partial++;
+          } else {
             job.failed++;
             job.errors.push({ chatId, error: result.reason || "Conversation not rendered" });
           }
@@ -455,7 +487,9 @@ export default class Session extends EventEmitter {
       if (!item.src || (!allowNetwork && !/^(blob:|data:)/i.test(item.src))) continue;
       if (this.shaBySrc.has(item.src)) {
         item.sha256 = this.shaBySrc.get(item.src);
-        continue;
+        // A hash without bytes only suffices if this account already stored
+        // those bytes. Otherwise the next scroll may revoke the blob URL.
+        if (this.store.storedBySha?.(item.sha256)) continue;
       }
       const read = await this.readBuffer(() => this.bot.readMedia(item.src));
       if (!read) continue;
@@ -501,6 +535,17 @@ export default class Session extends EventEmitter {
       const mediaId = existing?.id || this.store.addMedia(message.uid, {
         kind: item.mediaType || "image", viewOnce: false,
       });
+      const previouslyStored = item.sha256 && this.store.storedBySha(item.sha256);
+      if (previouslyStored?.storageKey) {
+        this.store.mediaStored(mediaId, {
+          key: previouslyStored.storageKey, contentType: previouslyStored.contentType,
+          size: previouslyStored.size, sha256: item.sha256,
+          kind: previouslyStored.kind,
+        });
+        stats.reused++;
+        this.store.touch(message.uid);
+        continue;
+      }
       let read = buffers.get(item.sha256);
       if (!read) {
         read = await this.run(() =>

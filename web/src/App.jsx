@@ -13,6 +13,7 @@ import Toasts, { useToasts } from "./components/Toasts.jsx";
 import AuthPortal from "./components/AuthPortal.jsx";
 import AdminCore from "./components/AdminCore.jsx";
 import BackfillDialog from "./components/BackfillDialog.jsx";
+import { resolveChatClick } from "./chat-click-mode.js";
 
 const DEFAULT_URL = normalizeBackendUrl(import.meta.env.VITE_API_URL, import.meta.env.DEV);
 
@@ -110,6 +111,8 @@ function Dashboard({ settings, user, onDisconnect }) {
   const [modal, setModal] = useState(null); // null | "add" | "settings"
   const [adminOpen, setAdminOpen] = useState(false);
   const [backfillOpen, setBackfillOpen] = useState(false);
+  // Per tenant and Snapchat account; no global change of read-state policy.
+  const [chatClickModes, setChatClickModes] = useState(() => load("snapbot:chat-click:" + user.id, {}));
   const [theme, setTheme] = useTheme();
 
   const onMessage = useCallback((accountId, message) => {
@@ -166,7 +169,36 @@ function Dashboard({ settings, user, onDisconnect }) {
   }, [accountId, chatId]);
 
   const selectAccount = (id) => setViewState({ accountId: id, chatId: id === accountId ? chatId : null });
-  const selectChat = (id) => setViewState({ accountId, chatId: id });
+  const clickMode = chatClickModes[accountId] || "ask";
+  const rememberClickMode = (mode) => {
+    const next = { ...chatClickModes, [accountId]: mode };
+    setChatClickModes(next);
+    save("snapbot:chat-click:" + user.id, next);
+  };
+  const toggleClickMode = () => {
+    if (clickMode !== "open") {
+      if (!window.confirm("Open Snapchat conversations whenever you click them in SnapBot? This may mark previously unread chats as read. Unopened Snaps still won't be clicked. Continue?")) return;
+      rememberClickMode("open");
+    } else {
+      rememberClickMode("passive");
+    }
+  };
+  const selectChat = (id) => {
+    setViewState({ accountId, chatId: id });
+    if (!id || status !== "connected") return;
+    const selected = resolveChatClick(clickMode, clickMode === "ask" && window.confirm(
+      "This can open the Snapchat conversation and may mark unread messages as read. Enable opening chats whenever you click them in SnapBot? Cancel keeps chats passive."
+    ));
+    if (clickMode === "ask") rememberClickMode(selected.remember);
+    if (selected.open) {
+      call("chat:sync", { accountId, chatId: id, confirmReadRisk: true })
+        .then(result => {
+          if (!result?.captured) toast(result?.reason || "Snapchat conversation could not be read", "error");
+          else if (result.history?.truncated) toast("Saved visible content, but older chat history may be incomplete.", "error");
+        })
+        .catch(error => toast(error.message, "error"));
+    }
+  };
 
   const run = (event, payload, success) =>
     call(event, payload).then((r) => { if (success) toast(success, "success"); return r; })
@@ -210,6 +242,11 @@ function Dashboard({ settings, user, onDisconnect }) {
         toolbar={
           <>
             <button className={`icon-btn ${panel === "screen" ? "on" : ""}`} title="Live screen" onClick={() => setPanel(panel === "screen" ? null : "screen")}><Icon name="screen" /></button>
+            {account && <button className={`btn small click-mode-toggle ${clickMode === "open" ? "on" : ""}`}
+              title="Choose whether clicking a chat opens Snapchat (may mark read)"
+              onClick={toggleClickMode} aria-label={clickMode === "open" ? "Disable opening chats on click" : "Enable opening chats on click"}>
+              Click: {clickMode === "open" ? "Open" : clickMode === "ask" ? "Ask" : "Passive"}
+            </button>}
             {account && <button className="icon-btn" title="Archive selected chats with read-receipt warning" aria-label="Archive selected chats"
               onClick={() => setBackfillOpen(true)}><Icon name="archive" /></button>}
             <button className={`icon-btn ${panel === "activity" ? "on" : ""}`} title="Activity" onClick={() => setPanel(panel === "activity" ? null : "activity")}><Icon name="activity" /></button>
@@ -239,6 +276,7 @@ function Dashboard({ settings, user, onDisconnect }) {
         onOpenScreen={() => setPanel("screen")}
         onInteractiveSync={() => call("chat:sync", { accountId, chatId, confirmReadRisk: true })}
         onBackfill={() => setBackfillOpen(true)}
+        clickMode={clickMode}
         toast={toast}
       />
 

@@ -62,6 +62,19 @@ try {
   assert.deepEqual(combined.filter(m=>m.kind==="media").map(m=>m.src),
     ["blob:saved-photo","blob:saved-video"]);
   assert.ok(combined.every(m=>m.from==="Friend"));
+  // A quoted caption outside the legacy span.ogn1z must survive even if an
+  // IMG/VIDEO was found during the first pass.
+  const quotedCaption = el("span", "I had one dream about you last night");
+  globalThis.document = { getElementById: id => id === "cv-friend" ? ({
+    textContent: "A saved media quote and caption",
+    querySelectorAll: selector => selector === "li.T1yt2" ? [legacyRow] :
+      selector === "img, video, [style*='background-image']" ? [savedVideo] :
+      selector === "*" ? [legacyRow, legacyBubble, caption, savedVideo, quotedCaption] : [],
+  }) : null };
+  const withCaption = extractVisibleMessages("friend", "Friend");
+  assert.deepEqual(withCaption.map(m => m.kind), ["text", "media", "text"],
+    "media must not hide newer semantic-only quoted text");
+  assert.equal(withCaption[2].text, "I had one dream about you last night");
   const statusItems = [
     el("span", "You saved a video"),
     el("span", "You took a screenshot of the chat"),

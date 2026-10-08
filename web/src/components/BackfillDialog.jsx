@@ -26,7 +26,7 @@ export default function BackfillDialog({ chats, progress, online, onStart, onCan
         {progress && (
           <div className="backfill-progress" role="status" aria-live="polite">
             <strong>{running ? "Archiving…" : progress.status === "completed" ? "Archive batch completed" : "Previous batch " + progress.status}</strong>
-            <span>{progress.completed} / {progress.total} visited · {progress.captured} captured · {progress.failed} unavailable</span>
+            <span>{progress.completed} / {progress.total} visited · {progress.captured} captured · {progress.failed} unavailable · {progress.partial || 0} partial</span>
             {running && progress.currentChatId &&
               <span className="muted small">Current: {chats.find(c => c.id === progress.currentChatId)?.name || "Selected chat"}</span>}
             {progress.errors?.length > 0 &&

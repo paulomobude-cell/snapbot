@@ -3,7 +3,7 @@ import { Avatar, Icon } from "../util.jsx";
 import { Empty } from "./ChatList.jsx";
 import { group } from "../message-groups.js";
 
-export default function Conversation({ chat, status, messages, now, onBack, onSend, onCopy, onOpenScreen, onInteractiveSync, onBackfill, toast }) {
+export default function Conversation({ chat, status, messages, now, onBack, onSend, onCopy, onOpenScreen, onInteractiveSync, onBackfill, clickMode, toast }) {
   const [pending, setPending] = useState([]);
   const [syncing, setSyncing] = useState(false); // optimistic sends
   const listRef = useRef(null);
@@ -61,13 +61,18 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
 
 
       <div className="passive-controls">
-        <span className="muted small">Passive mode · selecting a chat doesn't open it in Snapchat.</span>
+        <span className="muted small">{clickMode === "open"
+          ? "Click-to-sync on · selecting a chat opens Snapchat and may mark it read."
+          : clickMode === "ask"
+            ? "Chat click mode unset · first chat click will ask whether to open Snapchat."
+            : "Passive mode · selecting a chat doesn't open it in Snapchat."}</span>
         <button className="btn small" disabled={syncing || offline} onClick={async () => {
           if (!window.confirm("Open this conversation in Snapchat to sync? Snapchat may mark messages as read. Continue?")) return;
           setSyncing(true);
           try {
             const result = await onInteractiveSync();
             if (!result?.captured) toast(result?.reason || "Conversation was not available", "error");
+            else if (result.history?.truncated) toast("Saved what Snapchat rendered; older history could still be incomplete.", "error");
           } catch (error) { toast(error.message, "error"); }
           finally { setSyncing(false); }
         }}>{syncing ? "Syncing…" : "Open & sync (may mark read)"}</button>
@@ -145,6 +150,13 @@ function Bubble({ m, onCopy }) {
   return (
     <div className={`bubble-row ${deleted ? "deleted" : ""} ${gone ? "gone" : ""}`}>
       <div className="bubble" title={`Seen ${new Date(m.firstSeenAt).toLocaleString()}`}>
+        {m.replyTo && (
+          <div className="reply-preview" aria-label="Quoted message">
+            <span className="reply-preview-from">{m.replyTo.from || "Original message"}</span>
+            {m.replyTo.text && <span className="reply-preview-text">{m.replyTo.text}</span>}
+            {m.replyTo.mediaType && <span className="reply-preview-media">Quoted {m.replyTo.mediaType}</span>}
+          </div>
+        )}
         {media && <MediaView media={media} />}
         {m.kind === "snap" && !media && <span className="snap-tag">👻 Snap</span>}
         {m.text && <span className="bubble-text">{deleted ? m.display : m.text}</span>}

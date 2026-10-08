@@ -32,6 +32,7 @@ function toMessage(row) {
     from: row.from_name,
     isMe: !!row.is_me,
     text: row.text,
+    replyTo: (() => { try { return row.reply_to ? JSON.parse(row.reply_to) : null; } catch { return null; } })(),
     // what to show: deleted ones keep their content with the bin in front
     display: row.text,
     time: row.time,
@@ -90,9 +91,10 @@ export default class MessageStore extends EventEmitter {
       counts: q(`SELECT chat_id, SUM(kind != 'status') AS n, SUM(state = 'deleted' AND kind != 'status') AS deleted
                  FROM messages WHERE account_id = ? GROUP BY chat_id`),
       insert: q(`INSERT INTO messages
-        (account_id, id, uid, chat_id, kind, from_name, is_me, text, time, ord, state, first_seen_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live', ?)`),
+        (account_id, id, uid, chat_id, kind, from_name, is_me, text, time, ord, state, first_seen_at, reply_to)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live', ?, ?)`),
       setState: q(`UPDATE messages SET id = ?, state = ?, changed_at = ? WHERE account_id = ? AND id = ?`),
+      updateReply: q(`UPDATE messages SET reply_to = ? WHERE account_id = ? AND id = ?`),
       expired: q(`SELECT * FROM messages WHERE account_id = ? AND state != 'deleted' AND first_seen_at <= ?`),
       remove: q(`DELETE FROM messages WHERE account_id = ? AND id = ?`),
       tombstones: q(`SELECT id FROM tombstones WHERE account_id = ? AND chat_id = ?`),
@@ -125,6 +127,8 @@ export default class MessageStore extends EventEmitter {
       removeMedia: q(`DELETE FROM media WHERE message_uid = ?`),
       keyInUse: q(`SELECT COUNT(*) AS n FROM media WHERE storage_key = ?`),
       allKeys: q(`SELECT storage_key FROM media WHERE account_id = ? AND storage_key IS NOT NULL`),
+      chatOrder: q(`SELECT id FROM messages WHERE account_id = ? AND chat_id = ?`),
+      updateOrd: q(`UPDATE messages SET ord = ? WHERE account_id = ? AND chat_id = ? AND id = ?`),
       clearMessages: q(`DELETE FROM messages WHERE account_id = ?`),
       clearMedia: q(`DELETE FROM media WHERE account_id = ?`),
       clearTombstones: q(`DELETE FROM tombstones WHERE account_id = ?`),
@@ -223,7 +227,17 @@ export default class MessageStore extends EventEmitter {
         const { id, item } = entry;
         seen.set(id, item);
         this.missing.delete(id);
-        if (live.has(id) || tombstones.has(id)) return;
+        if (live.has(id)) {
+          // An earlier partial sync may have archived this reply without quote
+          // metadata. Enrich the existing row, keeping UID and media intact.
+          if (item.replyTo && !live.get(id).reply_to) {
+            const replyTo = JSON.stringify(item.replyTo);
+            this.sql.updateReply.run(replyTo, this.accountId, id);
+            updated.push(this.withMedia({ ...live.get(id), reply_to: replyTo }));
+          }
+          return;
+        }
+        if (tombstones.has(id)) return;
 
         // scrolled out of view and back: bring the archived copy back to life
         const revived = this.sql.revivable.get(this.accountId, chatId, `${id}~%`, now - REVIVE_WINDOW_MS);
@@ -248,7 +262,8 @@ export default class MessageStore extends EventEmitter {
         const uid = crypto.randomUUID();
         this.sql.insert.run(
           this.accountId, id, uid, chatId, item.kind, item.from, item.isMe ? 1 : 0,
-          item.text || "", item.time || "", ord, now
+          item.text || "", item.time || "", ord, now,
+          item.replyTo ? JSON.stringify(item.replyTo) : null
         );
         added.push(this.withMedia(this.sql.byId.get(this.accountId, id)));
       });
@@ -310,6 +325,26 @@ export default class MessageStore extends EventEmitter {
     }
     this.emit("chat:snapshot", { chatId, messages: this.getMessages(chatId) });
     return { seen, added, preserve };
+  }
+
+  // Only reorder if the combined DOM scan contains EVERY stored row for the
+  // chat. If there are archived/deleted rows outside the scan, leave existing
+  // chronology untouched rather than guessing where those events belong.
+  reorderObserved(chatId, observedIds) {
+    const all = this.sql.chatOrder.all(this.accountId, chatId);
+    if (!all.length) return false;
+    const order = [...new Set(observedIds)];
+    const seen = new Set(order);
+    if (all.some(row => !seen.has(row.id))) return false;
+    const inDb = new Set(all.map(row => row.id));
+    this.tx(() => {
+      let ordinal = 0;
+      for (const id of order) {
+        if (inDb.has(id)) this.sql.updateOrd.run(++ordinal, this.accountId, chatId, id);
+      }
+    });
+    this.emit("chat:snapshot", { chatId, messages: this.getMessages(chatId) });
+    return true;
   }
 
   // ---- media ----
