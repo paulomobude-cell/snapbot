@@ -285,6 +285,7 @@ io.on("connection", (socket) => {
     socket.emit("status", { accountId: p.accountId, ...session.getStatus() });
     socket.emit("chats", { accountId: p.accountId, chats: (entry(p), accounts.chatsWithPreviews(p.accountId)) });
     socket.emit("activity:list", { accountId: p.accountId, events: (entry(p), accounts.events(p.accountId)) });
+    socket.emit("backfill:progress", { accountId: p.accountId, progress: session.getBackfill() });
   }));
   socket.on("account:create", ack((p) => accounts.create({ ...p, ownerId: user.id })));
   socket.on("account:update", ack((p) => { entry(p); return accounts.update(p.accountId, p); }));
@@ -307,6 +308,10 @@ io.on("connection", (socket) => {
     if (p.confirmReadRisk !== true) throw new Error("Explicit read-receipt risk confirmation required");
     return session.syncChat(String(p.chatId), { interactive: true });
   }));
+  socket.on("backfill:start", ack((p) =>
+    entry(p).session.startBackfill(p.chatIds, { confirmReadRisk: p.confirmReadRisk === true })
+  ));
+  socket.on("backfill:cancel", ack((p) => entry(p).session.cancelBackfill()));
   socket.on("message:send", ack((p) => {
     entry(p);
     if (!p.text?.trim()) throw new Error("text required");
@@ -362,7 +367,7 @@ accounts.on("screen:frame", (data) => {
   const owner = accounts.entries.get(data.accountId)?.account.owner_user_id;
   if (owner) io.to(`screen:${data.accountId}`).volatile.emit("screen:frame", data);
 });
-for (const event of ["chats", "chat:snapshot", "activity", "status", "message:new",
+for (const event of ["chats", "chat:snapshot", "activity", "status", "backfill:progress", "message:new",
   "message:updated", "message:removed"]) {
   accounts.on(event, (data) => {
     const owner = accounts.entries.get(data.accountId)?.account.owner_user_id;

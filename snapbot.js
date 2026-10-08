@@ -740,7 +740,8 @@ export default class SnapBot {
   // opens a chat by id (no-op if it's already open). Returns false if the chat isn't in the list
   async openChat(chatId) {
     const convoSelector = `[id="cv-${chatId}"]`;
-    if (await this.page.$(convoSelector)) return true;
+    this.lastChatOpenReason = null;
+    if (await this.visibleChatId() === chatId) return true;
     let title = await this.page.$(`span[id="title-${chatId}"]`);
     // Offscreen rows aren't mounted in Snapchat's virtualized sidebar.
     // Reveal the requested chat by scrolling the list in bounded steps.
@@ -793,16 +794,39 @@ export default class SnapBot {
           while (el && !(el.scrollHeight > el.clientHeight + 2 && el.clientHeight > 0)) el = el.parentElement;
           if (el) el.scrollTop = previous;
         }, selector, initial);
+        this.lastChatOpenReason = "Conversation not found in Snapchat's rendered/virtualized chat list";
         return false;
       }
     }
-    await title.click();
+    const waitForVisibleChat = async () => {
+      try {
+        await this.page.waitForSelector(convoSelector, { visible: true, timeout: 5500 });
+        return true;
+      } catch {
+        // A pending render can complete before the next selector poll.
+        return await this.visibleChatId().catch(() => null) === chatId;
+      }
+    };
+    // The span itself may be off-screen or non-interactive in some Snapchat
+    // layouts. Retry the exact containing chat row even if its child click
+    // THROWS (not only when it fails to render a chat).
+    let lastError = null;
     try {
-      await this.page.waitForSelector(convoSelector, { timeout: 10000 });
-      return true;
-    } catch (error) {
-      return false;
-    }
+      await title.click();
+      if (await waitForVisibleChat()) return true;
+    } catch (error) { lastError = error; }
+    try {
+      const rowHandle = await title.evaluateHandle(node => node.closest('[role="listitem"]'));
+      const row = rowHandle.asElement();
+      if (row) {
+        await row.click();
+        if (await waitForVisibleChat()) return true;
+      }
+    } catch (error) { lastError = error; }
+    this.lastChatOpenReason = lastError
+      ? "Snapchat couldn't open this chat row: " + String(lastError.message || lastError).slice(0,150)
+      : "Chat row was selected but Snapchat did not show the conversation";
+    return false;
   }
 
   // returns what a chat currently shows as a flat list, or null if the chat isn't

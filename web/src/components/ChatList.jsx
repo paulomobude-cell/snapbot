@@ -25,8 +25,9 @@ export default function ChatList({ account, status, error, chats, messages, unre
       .map((chat) => {
         // prefer what this browser holds, else the server's preview
         const local = messages[chat.id];
-        const last = local?.length ? local[local.length - 1] : chat.preview?.last;
-        const count = local?.length ?? chat.preview?.count ?? 0;
+        const actual = local?.filter(m => m.kind !== "status" && m.kind !== "notice");
+        const last = actual?.length ? actual[actual.length - 1] : chat.preview?.last;
+        const count = actual?.length ?? chat.preview?.count ?? 0;
         return { chat, last, count, unread: unread[chat.id]?.length || 0 };
       })
       .filter((r) => !q || r.chat.name.toLowerCase().includes(q) || (r.last?.text || "").toLowerCase().includes(q))
@@ -73,9 +74,9 @@ export default function ChatList({ account, status, error, chats, messages, unre
                   <span className="chatrow-name">{chat.name}</span>
                   {chat.status?.streak && <span className="streak">{chat.status.streak}</span>}
                 </span>
-                <span className="chatrow-preview">
+                <span className="chatrow-preview" title="Status copied from Snapchat Web; mobile may update sooner">
                   {preview ? <>{last.isMe ? "You: " : ""}{last.kind === "media" ? "📷 Photo/Video" : last.kind === "snap" ? "👻 Snap" : preview}</>
-                    : <span className="muted">{[chat.status?.type, chat.status?.time].filter(Boolean).join(" · ") || "No messages"}</span>}
+                    : <span className="muted">{[chat.status?.type, chat.status?.time].filter(Boolean).join(" · ") || "No messages"}{chat.statusSource === "snapchat-web" ? " · Web" : ""}</span>}
                 </span>
               </span>
               <span className="chatrow-side">

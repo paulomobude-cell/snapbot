@@ -1,5 +1,7 @@
 import { EventEmitter } from "events";
 import fs from "fs";
+import { validateBackfillSelection } from "./backfill-selection.js";
+import { diagnostic, classifyDiagnosticError } from "./diagnostics.js";
 import path from "path";
 import crypto from "crypto";
 import SnapBot from "../snapbot.js";
@@ -40,6 +42,7 @@ export default class Session extends EventEmitter {
     this.sidebarDirty = false;
     this.lastSidebarSignal = 0;
     this.lastStatus = new Map(); // chatId -> status string, to spot new activity
+    this.backfill = null;
     this.screencast = null;
     this.viewers = 0;
     this.screenTimer = null;
@@ -52,6 +55,7 @@ export default class Session extends EventEmitter {
   }
 
   setStatus(status, error = null) {
+    if (status !== this.status) diagnostic("session_status", { accountId: this.accountId, stage: status });
     this.status = status;
     this.error = error;
     this.emit("status", this.getStatus());
@@ -250,6 +254,10 @@ export default class Session extends EventEmitter {
 
   async tick() {
     if (this.status !== "connected" || this.syncRunning) return;
+    if (this.backfill?.status === "running") {
+      this.scheduleLoop(1000);
+      return;
+    }
     this.syncRunning = true;
     this.sidebarDirty = false;
     try {
@@ -276,7 +284,9 @@ export default class Session extends EventEmitter {
     // conversations as the virtualized viewport changes. Keep newest visible
     // status information while retaining the rest of the known chat list.
     const merged = new Map(this.chats.map(chat => [chat.id, chat]));
-    for (const chat of visible) merged.set(chat.id, chat);
+    for (const chat of visible) merged.set(chat.id, {
+      ...chat, statusSource: "snapchat-web", observedAt: Date.now(),
+    });
     const chats = [...merged.values()];
     this.chats = chats;
     this.emit("chats", chats);
@@ -311,24 +321,129 @@ export default class Session extends EventEmitter {
     }
   }
 
-  async syncChat(chatId, { interactive = false } = {}) {
+  async syncChat(chatId, { interactive = false, fromBackfill = false } = {}) {
+    if (interactive && this.backfill?.status === "running" && !fromBackfill)
+      throw new Error("Archive job running. Wait or cancel it first.");
+    const mode = interactive ? "interactive" : "passive";
+    const started = Date.now();
+    const log = (event, fields = {}) => diagnostic(event, { accountId: this.accountId, chatId, mode, ...fields });
     const chat = this.chats.find((c) => c.id === chatId);
-    if (!chat) return { captured: false, reason: "Chat not discovered" };
-    const items = await this.run(async () => {
+    if (!chat) {
+      if (interactive) log("chat_sync_failed", { stage: "discovery", reason: "chat_not_found" });
+      return { captured: false, reason: "Chat not discovered" };
+    }
+    const readResult = await this.run(async () => {
       if (interactive) {
-        if (!(await this.bot.openChat(chatId))) return null;
-        await delay(650);
+        if (!(await this.bot.openChat(chatId)))
+          return { items: null, stage: "open", reason: this.bot.lastChatOpenReason || "Could not open conversation in Snapchat Web" };
       } else if (!this.bot.visibleChatId || (await this.bot.visibleChatId()) !== chatId) {
-        return null;
+        return { items: null, stage: "passive", reason: "Conversation is not already visible in Snapchat Web" };
       }
-      return this.bot.readMessages(chatId, chat.name, this.config.patterns);
+      // The browser may take several attempts to render an opened conversation.
+      for (let attempt = 0; attempt < (interactive ? 10 : 1); attempt++) {
+        const items = await this.bot.readMessages(chatId, chat.name, this.config.patterns);
+        if (items !== null) return { items, attempts: attempt + 1 };
+        if (interactive && attempt < 9) await delay(600);
+      }
+      return { items: null, stage: "render", reason: "Snapchat opened this chat, but its messages did not render in time. Check Live Screen and retry." };
     });
-    if (!items) return { captured: false, reason: "Conversation not rendered" };
-
+    if (!readResult?.items) {
+      if (interactive) log("chat_sync_failed", { stage: readResult?.stage || "render", reason: classifyDiagnosticError(readResult?.reason) });
+      return { captured: false, reason: readResult?.reason || "Conversation not rendered" };
+    }
+    const items = readResult.items;
+    const tally = { text: 0, status: 0, snap: 0, image: 0, video: 0 };
+    for (const item of items) {
+      if (item.kind === "text") tally.text++;
+      else if (item.kind === "notice" || item.kind === "status") tally.status++;
+      else if (item.kind === "snap") tally.snap++;
+      else if (item.kind === "media" && item.mediaType === "video") tally.video++;
+      else if (item.kind === "media") tally.image++;
+    }
     const buffers = await this.run(() => this.readMediaBuffers(items, { allowNetwork: interactive }));
-    const { seen } = this.store.sync(chatId, items, { preserve: true, reconcileMissing: false });
-    await this.captureMedia(chatId, seen, buffers, { allowNetwork: interactive });
+    const { seen, added = [] } = this.store.sync(chatId, items, { preserve: true, reconcileMissing: false });
+    const media = await this.captureMedia(chatId, seen, buffers, { allowNetwork: interactive });
+    if (interactive || added.length || (media?.stored || 0) || (media?.unavailable || 0) || (media?.failed || 0)) {
+      log("chat_sync", { ...tally, items: items.length, buffered: buffers.size, newMessages: added.length,
+        stored: media?.stored || 0, reused: media?.reused || 0,
+        unavailable: media?.unavailable || 0, failed: media?.failed || 0,
+        viewOnceSkipped: media?.viewOnceSkipped || 0,
+        retryDeferred: media?.retryDeferred || 0, elapsedMs: Date.now() - started });
+    }
     return { captured: true, messageCount: this.store.getMessages(chatId).filter(m => m.kind !== "status").length };
+  }
+
+  getBackfill() {
+    if (!this.backfill) return null;
+    const { id, status, total, completed, captured, failed, currentChatId,
+      errors, cancelRequested, startedAt, finishedAt } = this.backfill;
+    return { id, status, total, completed, captured, failed, currentChatId,
+      errors: [...errors], cancelRequested, startedAt, finishedAt };
+  }
+
+  publishBackfill() {
+    this.emit("backfill:progress", this.getBackfill());
+  }
+
+  startBackfill(chatIds, { confirmReadRisk = false } = {}) {
+    if (this.status !== "connected") throw new Error("Snapchat session is not connected.");
+    if (this.backfill?.status === "running") throw new Error("An archive job is already running.");
+    if (confirmReadRisk !== true) throw new Error("You must confirm the risk of read receipts.");
+    // Only these explicitly approved IDs are visited. No read-state guesses.
+    const ids = validateBackfillSelection(chatIds, this.chats);
+    this.backfill = {
+      id: crypto.randomUUID(), status: "running", total: ids.length, completed: 0,
+      captured: 0, failed: 0, currentChatId: null, errors: [],
+      cancelRequested: false, startedAt: Date.now(), finishedAt: null,
+    };
+    const job = this.backfill;
+    this.publishBackfill();
+    diagnostic("backfill_start", { accountId: this.accountId, total: ids.length });
+    void this.runSelectedBackfill(job, ids);
+    return this.getBackfill();
+  }
+
+  cancelBackfill() {
+    if (this.backfill?.status === "running") {
+      this.backfill.cancelRequested = true;
+      this.publishBackfill();
+    }
+    return this.getBackfill();
+  }
+
+  async runSelectedBackfill(job, ids) {
+    try {
+      for (const chatId of ids) {
+        if (job.cancelRequested || this.status !== "connected") break;
+        job.currentChatId = chatId;
+        this.publishBackfill();
+        try {
+          const result = await this.syncChat(chatId, { interactive: true, fromBackfill: true });
+          if (result.captured) job.captured++;
+          else {
+            job.failed++;
+            job.errors.push({ chatId, error: result.reason || "Conversation not rendered" });
+          }
+        } catch (error) {
+          job.failed++;
+          job.errors.push({ chatId, error: String(error.message || error).slice(0,180) });
+        }
+        job.completed++;
+        this.publishBackfill();
+        if (!job.cancelRequested) await delay(200);
+      }
+    } catch (error) {
+      job.failed++;
+      job.errors.push({ chatId: job.currentChatId, error: String(error.message || error).slice(0,180) });
+    } finally {
+      job.status = job.cancelRequested || this.status !== "connected" ? "cancelled" : "completed";
+      job.currentChatId = null;
+      job.finishedAt = Date.now();
+      diagnostic("backfill_finished", { accountId: this.accountId, completed: job.completed,
+        captured: job.captured, failed: job.failed, elapsedMs: job.finishedAt - job.startedAt,
+        stage: job.status });
+      this.publishBackfill();
+    }
   }
 
   // decrypts chat media into buffers keyed by content hash; tags each item with
@@ -370,35 +485,32 @@ export default class Session extends EventEmitter {
   // chat photos/videos from their blob, and tap-to-view snaps by opening them
   // (opening marks them viewed on Snapchat, same as if you opened the snap).
   async captureMedia(chatId, seen, buffers, { allowNetwork = false } = {}) {
-    let snapsOpened = 0;
+    const stats = { stored: 0, reused: 0, unavailable: 0, failed: 0, retryDeferred: 0, viewOnceSkipped: 0 };
     for (const [id, item] of seen) {
       if (item.kind !== "media" && item.kind !== "snap") continue;
       const message = this.store.getById(id);
       if (!message) continue;
       const existing = message.media[0];
       if (existing?.status === "stored") continue;
-      if (existing?.retryAt && existing.retryAt > Date.now()) continue;
+      if (existing?.retryAt && existing.retryAt > Date.now()) { stats.retryDeferred++; continue; }
 
-      const viewOnce = item.kind === "snap";
-      // Never open an unopened Snap automatically, even after an explicit
-      // text-chat sync. Opening a Snap requires separate user confirmation.
-      if (viewOnce) continue;
-      if (viewOnce && snapsOpened >= this.config.snapsPerSync) continue;
+      // An unopened view-once Snap is deliberately NEVER opened by sync.
+      // It is not a media-capture failure and must not increment failure stats.
+      if (item.kind === "snap") { stats.viewOnceSkipped++; continue; }
 
       const mediaId = existing?.id || this.store.addMedia(message.uid, {
-        kind: item.mediaType || "image",
-        viewOnce,
+        kind: item.mediaType || "image", viewOnce: false,
       });
-      let read = viewOnce ? null : buffers.get(item.sha256);
+      let read = buffers.get(item.sha256);
       if (!read) {
-        if (viewOnce) snapsOpened++;
         read = await this.run(() =>
           this.readBuffer(() =>
-            viewOnce ? null : (allowNetwork || /^(blob:|data:)/i.test(item.src || "") ? this.bot.readMedia(item.src) : null)
+            allowNetwork || /^(blob:|data:)/i.test(item.src || "") ? this.bot.readMedia(item.src) : null
           )
         );
       }
       if (!read) {
+        stats.unavailable++;
         this.store.mediaFailed(mediaId, "Media bytes not available in rendered browser");
         this.store.touch(message.uid);
         continue;
@@ -412,12 +524,17 @@ export default class Session extends EventEmitter {
         this.store.mediaStored(mediaId, {
           key, contentType: read.contentType, size: read.buffer.length, sha256: read.sha256, kind,
         });
+        if (reuse) stats.reused++;
+        else stats.stored++;
       } catch (error) {
-        console.error("Media upload failed", error.message);
+        stats.failed++;
+        diagnostic("media_store_failed", { accountId: this.accountId, chatId,
+          provider: this.media.kind === "r2" ? "r2" : "local", reason: classifyDiagnosticError(error) });
         this.store.mediaFailed(mediaId, error.message);
       }
       this.store.touch(message.uid);
     }
+    return stats;
   }
 
   async selectChat(chatId) {
@@ -428,6 +545,7 @@ export default class Session extends EventEmitter {
 
   async sendMessage(chatId, text) {
     if (this.status !== "connected") throw new Error("Session not connected");
+    if (this.backfill?.status === "running") throw new Error("Selected-chat archive running. Wait or cancel before sending.");
     await this.run(async () => {
       if (!(await this.bot.openChat(chatId))) throw new Error("Chat not found");
       await this.bot.typeMessage(text);
@@ -437,6 +555,7 @@ export default class Session extends EventEmitter {
   }
 
   async logout() {
+    this.cancelBackfill();
     this.stopLoop();
     try {
       await this.run(() => this.bot.logout());
@@ -456,6 +575,7 @@ export default class Session extends EventEmitter {
   }
 
   async stop() {
+    this.cancelBackfill();
     this.stopLoop();
     this.setStatus("stopped");
     await this.stopScreencast();

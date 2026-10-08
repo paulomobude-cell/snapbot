@@ -33,6 +33,35 @@ try {
   assert.deepEqual(items.filter(x => x.kind === "text").map(x => x.text), ["hello there","I can see these"]);
   assert.equal(items.at(-1).src, "blob:photo");
   assert.ok(items.every(x => x.from === "Friend"));
+
+  // Snapchat can use legacy <li> for captions while saved images/videos sit
+  // outside that list. The reader must not stop after the first text message.
+  const caption = el("span", "Isn't this winifred your sister?");
+  caption.matches = selector => selector === "span.ogn1z";
+  const legacyBubble = el("li", "");
+  legacyBubble.querySelectorAll = selector => selector === "span.ogn1z, img, video, button, [role='button']" ? [caption] : [];
+  const legacyRow = el("li", "");
+  legacyRow.querySelector = () => null;
+  legacyRow.querySelectorAll = selector => selector === "li" ? [legacyBubble] : [];
+  const savedPhoto = el("img", "", { src:"blob:saved-photo", width:480, height:620 });
+  const savedVideo = el("video", "", { src:"blob:saved-video", width:400, height:300 });
+  // Snapchat wraps many saved images in interactive containers. That should
+  // not cause a visible saved photo to disappear from the archive.
+  savedPhoto.closest = selector => selector === "button, [role='button']"
+    ? { getAttribute: () => "Saved image", textContent: "Saved image" } : null;
+  savedVideo.currentSrc = "blob:saved-video";
+  globalThis.document = { getElementById: id => id === "cv-friend" ? ({
+    textContent: "caption and saved media",
+    querySelectorAll: selector => selector === "li.T1yt2" ? [legacyRow] :
+      selector === "img, video, [style*='background-image']" ? [savedPhoto, savedVideo] :
+      selector === "*" ? [savedPhoto, legacyRow, legacyBubble, caption, savedVideo] : [],
+  }) : null };
+  const combined = extractVisibleMessages("friend", "Friend");
+  assert.deepEqual(combined.map(m=>m.kind), ["media","text","media"],
+    "image before caption, then video in DOM order with legacy text present");
+  assert.deepEqual(combined.filter(m=>m.kind==="media").map(m=>m.src),
+    ["blob:saved-photo","blob:saved-video"]);
+  assert.ok(combined.every(m=>m.from==="Friend"));
   const statusItems = [
     el("span", "You saved a video"),
     el("span", "You took a screenshot of the chat"),
@@ -47,6 +76,25 @@ try {
   assert.deepEqual(classified.map(item => item.kind), ["notice", "notice", "notice", "text"]);
   assert.equal(classified.some(item => item.kind === "media"), false,
     "saved-media notice must not pretend its bytes are available");
+    const realLabels = [
+    el("span", "YOU ARE USING SNAPCHAT FOR WEB"),
+    el("span", "YOU TOOK A SCREENSHOT OF CHAT!"),
+    el("span", "YOU SCREEN RECORDED CHAT!"),
+    el("span", "YOU SAVED A VIDEO FROM Osaebobo"),
+    el("span", "This video is no longer available"),
+    el("span", "1 year ago"),
+    el("span", "Click to view"),
+    el("span", "Okay my love"),
+  ];
+  globalThis.document = { getElementById: id => id === "cv-friend" ? ({
+    textContent: realLabels.map(item => item.textContent).join(" "),
+    querySelectorAll: selector => selector === "*" ? realLabels : [],
+  }) : null };
+  const reality = extractVisibleMessages("friend", "Friend");
+  assert.deepEqual(reality.map(item => item.kind), ["notice","notice","notice","notice","notice","snap","text"]);
+  assert.ok(reality.filter(item=>item.kind==="notice").every(item=>item.isMe===false && item.from==="Snapchat"),
+    "system labels must never be presented as outgoing messages");
+  assert.equal(reality.at(-1).text,"Okay my love");
     globalThis.document = { getElementById: () => ({
     textContent: "unknown layout", querySelectorAll: () => [],
   }) };

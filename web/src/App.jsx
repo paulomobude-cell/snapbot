@@ -12,6 +12,7 @@ import AccountSettings from "./components/AccountSettings.jsx";
 import Toasts, { useToasts } from "./components/Toasts.jsx";
 import AuthPortal from "./components/AuthPortal.jsx";
 import AdminCore from "./components/AdminCore.jsx";
+import BackfillDialog from "./components/BackfillDialog.jsx";
 
 const DEFAULT_URL = normalizeBackendUrl(import.meta.env.VITE_API_URL, import.meta.env.DEV);
 
@@ -108,6 +109,7 @@ function Dashboard({ settings, user, onDisconnect }) {
   const [panel, setPanel] = useState(null); // null | "screen" | "activity"
   const [modal, setModal] = useState(null); // null | "add" | "settings"
   const [adminOpen, setAdminOpen] = useState(false);
+  const [backfillOpen, setBackfillOpen] = useState(false);
   const [theme, setTheme] = useTheme();
 
   const onMessage = useCallback((accountId, message) => {
@@ -208,6 +210,8 @@ function Dashboard({ settings, user, onDisconnect }) {
         toolbar={
           <>
             <button className={`icon-btn ${panel === "screen" ? "on" : ""}`} title="Live screen" onClick={() => setPanel(panel === "screen" ? null : "screen")}><Icon name="screen" /></button>
+            {account && <button className="icon-btn" title="Archive selected chats with read-receipt warning" aria-label="Archive selected chats"
+              onClick={() => setBackfillOpen(true)}><Icon name="archive" /></button>}
             <button className={`icon-btn ${panel === "activity" ? "on" : ""}`} title="Activity" onClick={() => setPanel(panel === "activity" ? null : "activity")}><Icon name="activity" /></button>
             <button className={`icon-btn ${notify ? "on" : ""}`} title={notify ? "Notifications on" : "Notifications off"} onClick={toggleNotify}><Icon name="bell" /></button>
             <button className="icon-btn" title="Copy my personal Comnexus API key" aria-label="Copy my personal Comnexus API key"
@@ -234,6 +238,7 @@ function Dashboard({ settings, user, onDisconnect }) {
         onCopy={(text) => navigator.clipboard?.writeText(text).then(() => toast("Copied", "success"))}
         onOpenScreen={() => setPanel("screen")}
         onInteractiveSync={() => call("chat:sync", { accountId, chatId, confirmReadRisk: true })}
+        onBackfill={() => setBackfillOpen(true)}
         toast={toast}
       />
 
@@ -267,6 +272,13 @@ function Dashboard({ settings, user, onDisconnect }) {
           <span className="spinner" /> {conn.error === "Unauthorized" ? "Comnexus account rejected" : conn.error ? `Can't reach backend: ${conn.error}` : "Reconnecting…"}
           <button className="btn small" onClick={onDisconnect}>Sign out</button>
         </div>
+      )}
+
+      {backfillOpen && account && (
+        <BackfillDialog key={accountId} chats={chats} progress={state.backfill[accountId] || null}
+          online={status === "connected"} onClose={() => setBackfillOpen(false)}
+          onStart={chatIds => call("backfill:start", { accountId, chatIds, confirmReadRisk: true })}
+          onCancel={() => call("backfill:cancel", { accountId }).catch(e => toast(e.message, "error"))} />
       )}
 
       {modal === "add" && (

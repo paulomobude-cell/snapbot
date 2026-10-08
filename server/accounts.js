@@ -96,6 +96,7 @@ export default class AccountManager extends EventEmitter {
       this.emitAccounts();
     });
     session.on("chats", () => this.emit("chats", { accountId: id, chats: this.chatsWithPreviews(id) }));
+    session.on("backfill:progress", (progress) => this.emit("backfill:progress", { accountId: id, progress }));
     session.on("chat:activity", ({ chatId, status }) => {
       this.log(id, "observed", chatId, `${chatName(chatId)}: ${status?.type || "activity"} ${status?.time || ""}`.trim());
     });
@@ -105,7 +106,7 @@ export default class AccountManager extends EventEmitter {
     );
     store.on("message:new", (message) => {
       send("message:new", async () => ({ message: (await this.withUrls([message]))[0] }));
-      if (!message.isMe) this.log(id, "new", message.chatId, `${chatName(message.chatId)}: sent ${what(message)}`);
+      if (!message.isMe && message.kind !== "status") this.log(id, "new", message.chatId, `${chatName(message.chatId)}: sent ${what(message)}`);
     });
     store.on("message:updated", (message) => {
       send("message:updated", async () => ({ message: (await this.withUrls([message]))[0] }));
