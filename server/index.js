@@ -140,9 +140,23 @@ app.get("/api/admin/overview", (_req, res) => {
     mediaBytes: media.bytes, mediaCount: media.count, mediaStorage: mediaStorage.kind,
   });
 });
+const usageForUser = db.prepare(`
+  SELECT COALESCE((SELECT COUNT(*) FROM messages
+      WHERE account_id IN (SELECT id FROM accounts WHERE owner_user_id=?)),0) AS archived,
+    COALESCE((SELECT SUM(size) FROM media
+      WHERE account_id IN (SELECT id FROM accounts WHERE owner_user_id=?)
+      AND status='stored'),0) AS mediaBytes
+`);
+const auditInsert = db.prepare("INSERT INTO admin_audit (action,target,client_hash,at) VALUES (?,?,?,?)");
+const adminAudit = (req, action, target = null) => {
+  const clientHash = crypto.createHash("sha256").update(String(clientIp(req))).digest("hex").slice(0, 16);
+  auditInsert.run(action, target, clientHash, Date.now());
+};
+app.get("/api/admin/audit", (_req, res) =>
+  res.json(db.prepare("SELECT action, target, at FROM admin_audit ORDER BY seq DESC LIMIT 50").all()));
 app.get("/api/admin/users", (_req, res) => {
   const users = tenantAuth.users().map(u => ({
-    ...u, accounts: accounts.list(u.id),
+    ...u, accounts: accounts.list(u.id), usage: usageForUser.get(u.id, u.id),
   }));
   const legacy = accounts.list().filter(a => !accounts.get(a.id).account.owner_user_id);
   res.json({ users, legacy });
@@ -151,7 +165,9 @@ app.post("/api/admin/claim", (req, res) => {
   try {
     const userId = String(req.body?.userId || ""), accountId = String(req.body?.accountId || "");
     if (!tenantAuth.sql.getId.get(userId)) return res.status(404).json({ error: "User not found" });
-    res.json({ account: accounts.claim(userId, accountId) });
+    const account = accounts.claim(userId, accountId);
+    adminAudit(req, "claim", accountId + " -> " + userId);
+    res.json({ account });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
 app.delete("/api/admin/users/:id", async (req, res) => {
@@ -163,6 +179,7 @@ app.delete("/api/admin/users/:id", async (req, res) => {
     }
     const removedAccounts = await accounts.removeAllForOwner(user.id);
     tenantAuth.deleteUser(user.id);
+    adminAudit(req, "delete-user", user.id + " (accounts: " + removedAccounts + ")");
     res.json({ deleted: true, removedAccounts });
   } catch (error) { res.status(500).json({ error: "Account removal failed: " + error.message }); }
 });
