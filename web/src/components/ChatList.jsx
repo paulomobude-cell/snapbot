@@ -56,7 +56,7 @@ export default function ChatList({ account, status, error, chats, messages, unre
         ))}
       </div>
       <div className="chatlist-items">
-        {!account && <Empty icon="plug" title="No account yet" text="Add a Snapchat account to get started." />}
+        {!account && <Empty icon="plug" title="No account yet" text="Tap + to add Snapchat, or use Admin Core (shield icon) to claim an existing account." />}
         {account && status !== "connected" && chats.length === 0 && (
           <Empty icon="lock" title={STATUS_LABEL[status] || "Not connected"} text="Chats show up once the session is logged in. Use the live screen to log in." />
         )}
@@ -64,8 +64,6 @@ export default function ChatList({ account, status, error, chats, messages, unre
           <Empty icon="message" title={query ? "No matches" : "Nothing here"} text={query ? "Try another name." : "No chats match this filter."} />
         )}
         {rows.map(({ chat, last, count, unread: n }) => {
-          const preserved = chat.preservation?.status === "authorized";
-          const pending = chat.preservation?.status === "pending";
           const preview = last ? (last.display || last.text) : null;
           return (
             <button key={chat.id} className={`chatrow ${chat.id === activeId ? "active" : ""} ${n ? "unread" : ""}`} onClick={() => onSelect(chat.id)}>
@@ -73,8 +71,6 @@ export default function ChatList({ account, status, error, chats, messages, unre
               <span className="chatrow-body">
                 <span className="chatrow-top">
                   <span className="chatrow-name">{chat.name}</span>
-                  {preserved && <span className="preserve-dot" title="Preserved — messages kept"><Icon name="lock" size={11} /></span>}
-                  {pending && <span className="preserve-dot pending" title="Preservation pending the other account's code"><Icon name="clock" size={11} /></span>}
                   {chat.status?.streak && <span className="streak">{chat.status.streak}</span>}
                 </span>
                 <span className="chatrow-preview">
