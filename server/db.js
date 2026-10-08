@@ -77,6 +77,30 @@ export function openDb(dataDir) {
     CREATE INDEX IF NOT EXISTS events_account ON events (account_id, seq);
     PRAGMA user_version = 4;
   `);
+  // Add tenant ownership without dropping or rewriting any existing archive.
+  // Legacy accounts deliberately remain unassigned until an admin claims them.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_users (
+      id TEXT PRIMARY KEY,
+      phone TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      recovery_hash TEXT NOT NULL,
+      api_key_hash TEXT NOT NULL UNIQUE,
+      role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user','admin')),
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS auth_attempts (
+      scope TEXT PRIMARY KEY,
+      count INTEGER NOT NULL,
+      window_start INTEGER NOT NULL
+    );
+  `);
+  const existingColumns = db.prepare("PRAGMA table_info(accounts)").all().map((col) => col.name);
+  if (!existingColumns.includes("owner_user_id")) {
+    db.exec("ALTER TABLE accounts ADD COLUMN owner_user_id TEXT REFERENCES app_users(id)");
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS accounts_owner_idx ON accounts(owner_user_id)");
+  db.exec("PRAGMA user_version = 5");
   return db;
 }
 
