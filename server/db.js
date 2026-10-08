@@ -95,6 +95,13 @@ export function openDb(dataDir) {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS user_sessions_user ON user_sessions(user_id, created_at);
+    CREATE TABLE IF NOT EXISTS admin_audit (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      action TEXT NOT NULL,
+      target TEXT,
+      client_hash TEXT,
+      at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS auth_attempts (
       scope TEXT PRIMARY KEY,
       count INTEGER NOT NULL,
