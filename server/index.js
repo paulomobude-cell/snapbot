@@ -10,6 +10,7 @@ import { openDb, createCipher } from "./db.js";
 import AccountManager from "./accounts.js";
 import MediaStorage from "./media.js";
 import { TenantAuth } from "./tenant-auth.js";
+import { purgeProvenEmptyLegacy } from "./cleanup-empty-legacy.js";
 
 const env = process.env;
 const list = (v) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : []);
@@ -59,6 +60,8 @@ if (!config.apiToken) {
 fs.mkdirSync(config.dataDir, { recursive: true });
 
 const db = openDb(config.dataDir);
+const cleaned = purgeProvenEmptyLegacy(db, config.dataDir);
+if (cleaned) console.log(`Removed ${cleaned} empty legacy account placeholder(s); session profiles and archives were untouched.`);
 const tenantAuth = new TenantAuth(db, { adminToken: config.adminToken });
 const mediaStorage = new MediaStorage({ ...config, publicUrl: config.publicUrl || `http://localhost:${config.port}` });
 const BotClass = config.mock ? (await import("./mockBot.js")).default : undefined;
