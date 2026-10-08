@@ -24,6 +24,7 @@ jobs:
       - run: node test/live-screen.mjs
       - run: node test/chat-reader.mjs
       - run: node test/open-chat.mjs
+      - run: node test/render-retry.mjs
       - run: node test/chat-discovery.mjs
       - run: node test/incoming-sync.mjs
       - run: node test/backfill.mjs

@@ -21,7 +21,7 @@ export default function BackfillDialog({ chats, progress, online, onStart, onCan
   return (
     <Modal title="Archive selected conversations" onClose={onClose} wide>
       <div className="stack">
-        <p className="muted small">A fresh session starts with an empty archive. Passive monitoring observes the sidebar, but cannot retrieve chat history that Snapchat hasn't rendered.</p>
+        <p className="muted small">A fresh session starts with an empty archive. Passive monitoring observes the sidebar, but cannot retrieve chat history that Snapchat hasn't rendered. Archiving selected chats captures content currently rendered in the opened conversation; older scrollback may still require scrolling in Live Screen.</p>
         <p className="backfill-warning"><strong>Read-receipt risk:</strong> This action opens selected conversations in Snapchat Web. It may mark chats read even when mobile currently says Delivered or New Snap. Web statuses can lag mobile, so nothing is selected automatically. The batch never opens an unopened Snap itself.</p>
         {progress && (
           <div className="backfill-progress" role="status" aria-live="polite">
