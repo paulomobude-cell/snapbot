@@ -65,20 +65,6 @@ export function openDb(dataDir) {
       PRIMARY KEY (account_id, id)
     );
 
-    -- consent gate: a chat is preserved (kept past Snapchat's delete/expiry, media
-    -- captured) only when BOTH ends opted in. No row = not preserved (mirror only).
-    CREATE TABLE IF NOT EXISTS pairs (
-      account_id    TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-      chat_id       TEXT NOT NULL,
-      peer_name     TEXT,
-      status        TEXT NOT NULL,   -- pending | authorized
-      method        TEXT,            -- code (peer typed the phrase) | linked (both accounts are yours)
-      code          TEXT,            -- handshake phrase the peer must send, while pending
-      requested_at  INTEGER,
-      authorized_at INTEGER,
-      PRIMARY KEY (account_id, chat_id)
-    );
-
     -- activity feed
     CREATE TABLE IF NOT EXISTS events (
       seq        INTEGER PRIMARY KEY AUTOINCREMENT,
