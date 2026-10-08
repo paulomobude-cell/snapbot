@@ -13,11 +13,12 @@ const initial = {
 };
 
 function loadUnread() {
+  // Privacy: do not restore unread markers from another Comnexus user.
   try {
-    return JSON.parse(localStorage.getItem("snapbot:unread") || "{}");
-  } catch {
-    return {};
-  }
+    const tenant = JSON.parse(localStorage.getItem("snapbot:session") || "null")?.user?.id;
+    if (!tenant) return {};
+    return JSON.parse(localStorage.getItem("snapbot:unread:" + tenant) || "{}");
+  } catch { return {}; }
 }
 
 const setIn = (obj, acc, value) => ({ ...obj, [acc]: value });
@@ -155,7 +156,8 @@ export function useBackend(settings, { onMessage }) {
 
   useEffect(() => {
     try {
-      localStorage.setItem("snapbot:unread", JSON.stringify(state.unread));
+      const tenant = JSON.parse(localStorage.getItem("snapbot:session") || "null")?.user?.id;
+      if (tenant) localStorage.setItem("snapbot:unread:" + tenant, JSON.stringify(state.unread));
     } catch {
       // storage unavailable
     }
