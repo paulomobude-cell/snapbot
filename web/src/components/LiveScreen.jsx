@@ -8,7 +8,6 @@ export default function LiveScreen({ account, status, statusError, socket, call,
   const accountId = account.id;
   const [screen, setScreen] = useState({ frame: null, pages: [], pageId: null, width: 1920, height: 1080 });
   const [fullscreen, setFullscreen] = useState(false);
-  const [nativeFullscreen, setNativeFullscreen] = useState(false);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [input, setInput] = useState("");
@@ -24,10 +23,13 @@ export default function LiveScreen({ account, status, statusError, socket, call,
 
   useEffect(() => {
     const sync = () => {
-      const active = document.fullscreenElement === rootRef.current;
-      setNativeFullscreen(active);
-      // Escape exits native fullscreen, not merely the browser's border.
-      if (!document.fullscreenElement) setFullscreen((old) => old && !rootRef.current?.dataset.nativeMode);
+      // Native Escape must restore the normal panel layout.
+      if (!document.fullscreenElement && rootRef.current?.dataset.nativeMode === "true") {
+        rootRef.current.dataset.nativeMode = "";
+        setFullscreen(false);
+        setControlsOpen(false);
+        setZoom(1);
+      }
     };
     const onEscape = (event) => {
       if (event.key !== "Escape") return;
