@@ -36,6 +36,9 @@ export default class Session extends EventEmitter {
     this.lastChatDiscovery = 0;
     this.pendingSync = new Set();
     this.passiveActivity = new Map(); // chatId -> latest sidebar change
+    this.syncRunning = false;
+    this.sidebarDirty = false;
+    this.lastSidebarSignal = 0;
     this.lastStatus = new Map(); // chatId -> status string, to spot new activity
     this.screencast = null;
     this.viewers = 0;
@@ -217,6 +220,10 @@ export default class Session extends EventEmitter {
   async onLoggedIn() {
     this.setStatus("connected");
     await this.run(() => this.bot.handlePopup());
+    if (this.bot.watchChatList) {
+      await this.run(() => this.bot.watchChatList(() => this.signalSidebarActivity())).catch(error =>
+        console.warn("Passive sidebar observer unavailable; periodic scan remains active:", error.message));
+    }
     this.scheduleLoop(0);
   }
 
@@ -230,15 +237,29 @@ export default class Session extends EventEmitter {
     this.loopTimer = null;
   }
 
-  async tick() {
+  signalSidebarActivity() {
     if (this.status !== "connected") return;
+    const now = Date.now();
+    // Sidebar animations and virtualized scrolling can cause hundreds of
+    // mutations; a per-session rate limiter prevents thrashing Chromium.
+    if (now - this.lastSidebarSignal < 1200) return;
+    this.lastSidebarSignal = now;
+    this.sidebarDirty = true;
+    if (!this.syncRunning) this.scheduleLoop(200);
+  }
+
+  async tick() {
+    if (this.status !== "connected" || this.syncRunning) return;
+    this.syncRunning = true;
+    this.sidebarDirty = false;
     try {
       await this.syncChats();
     } catch (error) {
-      if (this.status !== "connected") return; // stopped mid-sync
-      console.error("Sync failed", error.message);
+      if (this.status === "connected") console.error("Sync failed", error.message);
+    } finally {
+      this.syncRunning = false;
+      if (this.status === "connected") this.scheduleLoop(this.sidebarDirty ? 200 : this.config.syncIntervalMs);
     }
-    this.scheduleLoop(this.config.syncIntervalMs);
   }
 
   async syncChats() {
@@ -425,6 +446,7 @@ export default class Session extends EventEmitter {
     this.store.resetSync(); // the archive stays
     this.pendingSync.clear();
     this.passiveActivity.clear();
+    this.sidebarDirty = false;
     this.lastStatus.clear();
     this.lastChatDiscovery = 0;
     this.chats = [];
