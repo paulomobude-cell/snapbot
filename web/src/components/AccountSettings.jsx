@@ -24,7 +24,7 @@ export default function AccountSettings({ account, status, onClose, onSave, onRe
         <div className="row wrap">
           <button className="btn" onClick={onRestart}><Icon name="refresh" size={16} /> Restart browser</button>
           <button className="btn" onClick={() => window.confirm("Log this account out of Snapchat?") && onLogout()}><Icon name="logout" size={16} /> Log out</button>
-          <button className="btn" onClick={onDisconnect}><Icon name="plug" size={16} /> Change backend</button>
+          <button className="btn" onClick={onDisconnect}><Icon name="plug" size={16} /> Sign out of Comnexus</button>
         </div>
         <div className="danger-zone">
           <strong>Remove account</strong>
