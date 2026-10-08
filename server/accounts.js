@@ -25,6 +25,8 @@ export default class AccountManager extends EventEmitter {
       get: q(`SELECT * FROM accounts WHERE id = ?`),
       insert: q(`INSERT INTO accounts (id, label, username, secret, created_at) VALUES (?, ?, ?, ?, ?)`),
       update: q(`UPDATE accounts SET label = ?, username = ?, secret = ? WHERE id = ?`),
+      claim: q(`UPDATE accounts SET owner_user_id=? WHERE id=? AND owner_user_id IS NULL`),
+      byOwner: q(`SELECT id FROM accounts WHERE owner_user_id=?`),
       remove: q(`DELETE FROM accounts WHERE id = ?`),
       addEvent: q(`INSERT INTO events (account_id, type, chat_id, detail, at) VALUES (?, ?, ?, ?, ?)`),
       events: q(`SELECT * FROM events WHERE account_id = ? ORDER BY seq DESC LIMIT ?`),
@@ -167,8 +169,10 @@ export default class AccountManager extends EventEmitter {
     });
   }
 
-  list() {
-    return [...this.entries.values()].map(({ account, session }) => ({
+  list(ownerId = undefined) {
+    return [...this.entries.values()]
+      .filter(({ account }) => ownerId === undefined || account.owner_user_id === ownerId)
+      .map(({ account, session }) => ({
       id: account.id,
       label: account.label,
       username: account.username,
@@ -182,7 +186,27 @@ export default class AccountManager extends EventEmitter {
     this.emit("accounts", this.list());
   }
 
-  create({ label, username, password, remember }) {
+  owned(ownerId, accountId) {
+    const entry = this.get(accountId);
+    if (!ownerId || entry.account.owner_user_id !== ownerId) {
+      const e = new Error("Account not found");
+      e.statusCode = 404;
+      throw e;
+    }
+    return entry;
+  }
+
+  claim(ownerId, accountId) {
+    const entry = this.get(accountId);
+    if (entry.account.owner_user_id !== null) throw new Error("Only unassigned legacy accounts may be claimed");
+    const result = this.sql.claim.run(ownerId, accountId);
+    if (!result.changes) throw new Error("Account already assigned");
+    entry.account.owner_user_id = ownerId;
+    this.emitAccounts();
+    return this.list(ownerId).find(a => a.id === accountId);
+  }
+
+  create({ label, username, password, remember, ownerId = null }) {
     if (this.entries.size >= this.config.maxAccounts) {
       throw new Error(`Account limit reached (MAX_ACCOUNTS=${this.config.maxAccounts})`);
     }
@@ -190,10 +214,11 @@ export default class AccountManager extends EventEmitter {
     const id = crypto.randomUUID();
     const secret = remember && password ? this.cipher.encrypt(password) : null;
     this.sql.insert.run(id, label?.trim() || username || "Account", username, secret, Date.now());
+    if (ownerId) this.db.prepare("UPDATE accounts SET owner_user_id=? WHERE id=?").run(ownerId, id);
     const entry = this.attach(this.sql.get.get(id));
     if (password && !secret) this.useOnce(entry.session, { username, password });
     this.emitAccounts();
-    return this.list().find((a) => a.id === id);
+    return this.list(ownerId || undefined).find((a) => a.id === id);
   }
 
   update(id, { label, remember, password }) {
@@ -237,15 +262,28 @@ export default class AccountManager extends EventEmitter {
     session.on("status", forget);
   }
 
+  async removeAllForOwner(ownerId) {
+    const ids = this.sql.byOwner.all(ownerId).map(row => row.id);
+    for (const id of ids) await this.remove(id);
+    return ids.length;
+  }
+
   async remove(id) {
     const { session, store } = this.get(id);
-    store.clear(); // purges its media from storage too
-    this.entries.delete(id);
+    // Stop Chromium before enumerating media; otherwise an active sync could
+    // recreate objects after deletion. Never erase DB references until external
+    // media deletion has succeeded, so failures remain retryable.
     await session.stop();
-    session.removeAllListeners();
-    store.removeAllListeners();
+    const keys = [...new Set(store.sql.allKeys.all(id).map(row => row.storage_key).filter(Boolean))];
+    for (let i = 0; i < keys.length; i += 10) {
+      await Promise.all(keys.slice(i, i + 10).map(key => this.media.remove(key)));
+    }
+    store.clear({ purge: false });
     this.sql.remove.run(id); // cascades messages, tombstones, events
     fs.rmSync(this.profileDir(id), { recursive: true, force: true });
+    this.entries.delete(id);
+    session.removeAllListeners();
+    store.removeAllListeners();
     this.emitAccounts();
   }
 

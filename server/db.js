@@ -1,9 +1,22 @@
 import path from "path";
+import fs from "node:fs";
 import crypto from "crypto";
 import { DatabaseSync } from "node:sqlite";
 
 export function openDb(dataDir) {
   const db = new DatabaseSync(path.join(dataDir, "snapbot.db"));
+  // A one-time SQLite-consistent snapshot before introducing Comnexus users.
+  // VACUUM INTO captures outstanding WAL changes; a plain file copy would not.
+  // If space is exhausted, abort rather than risk modifying the only archive.
+  const hasExistingAccounts = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'").get();
+  const alreadyMigrated = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='app_users'").get();
+  if (hasExistingAccounts && !alreadyMigrated) {
+    const backupDir = path.join(dataDir, "backups");
+    fs.mkdirSync(backupDir, { recursive: true });
+    const backupFile = path.join(backupDir, "snapbot-pre-comnexus-" + Date.now() + ".sqlite");
+    db.exec("VACUUM INTO '" + backupFile.replace(/'/g, "''") + "'");
+    console.log("Pre-Comnexus SQLite backup created:", backupFile);
+  }
   // v3 archives messages instead of dropping them; older message tables only
   // held what Snapchat still showed, so they're rebuilt from the next sync
   if (db.prepare("PRAGMA user_version").get().user_version < 3) {
@@ -77,6 +90,43 @@ export function openDb(dataDir) {
     CREATE INDEX IF NOT EXISTS events_account ON events (account_id, seq);
     PRAGMA user_version = 4;
   `);
+  // Add tenant ownership without dropping or rewriting any existing archive.
+  // Legacy accounts deliberately remain unassigned until an admin claims them.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_users (
+      id TEXT PRIMARY KEY,
+      phone TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      recovery_hash TEXT NOT NULL,
+      api_key_hash TEXT NOT NULL UNIQUE,
+      role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user','admin')),
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      key_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS user_sessions_user ON user_sessions(user_id, created_at);
+    CREATE TABLE IF NOT EXISTS admin_audit (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      action TEXT NOT NULL,
+      target TEXT,
+      client_hash TEXT,
+      at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS auth_attempts (
+      scope TEXT PRIMARY KEY,
+      count INTEGER NOT NULL,
+      window_start INTEGER NOT NULL
+    );
+  `);
+  const existingColumns = db.prepare("PRAGMA table_info(accounts)").all().map((col) => col.name);
+  if (!existingColumns.includes("owner_user_id")) {
+    db.exec("ALTER TABLE accounts ADD COLUMN owner_user_id TEXT REFERENCES app_users(id)");
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS accounts_owner_idx ON accounts(owner_user_id)");
+  db.exec("PRAGMA user_version = 5");
   return db;
 }
 

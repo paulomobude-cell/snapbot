@@ -1,0 +1,31 @@
+name: Comnexus tenant & admin isolation
+on:
+  push:
+    branches: [feat/comnexus-tenant-auth-admin]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: node --check server/index.js
+      - run: node --check server/tenant-auth.js
+      - run: node test/tenant-auth.mjs
+      - run: npm test
+      - run: node test/login.mjs
+      - run: node test/live-screen.mjs
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - run: node scripts/pwa-smoke.mjs
+        working-directory: web
+      - run: node scripts/tenant-e2e.mjs
+        working-directory: web

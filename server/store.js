@@ -370,7 +370,7 @@ export default class MessageStore extends EventEmitter {
   }
 
   // account removed: everything goes, including stored media
-  clear() {
+  clear({ purge = true } = {}) {
     const keys = this.sql.allKeys.all(this.accountId).map((r) => r.storage_key);
     this.resetSync();
     this.tx(() => {
@@ -378,6 +378,6 @@ export default class MessageStore extends EventEmitter {
       this.sql.clearMessages.run(this.accountId);
       this.sql.clearTombstones.run(this.accountId);
     });
-    if (keys.length) this.emit("media:purge", [...new Set(keys)]);
+    if (purge && keys.length) this.emit("media:purge", [...new Set(keys)]);
   }
 }
