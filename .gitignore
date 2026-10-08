@@ -1,3 +1,7 @@
 node_modules/
 .env
-screenshot.png
+screenshot.pngdata/
+*-cookies.json
+web/node_modules/
+web/dist/
+web/.env

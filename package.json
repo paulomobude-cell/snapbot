@@ -3,17 +3,26 @@
   "version": "1.0.0",
   "description": "A bot that automates snapchat ",
   "main": "index.js",
-  "devDependencies": {},
   "type": "module",
   "scripts": {
-    "bot": "node index.js"
+    "start": "node --no-warnings=ExperimentalWarning server/index.js",
+    "dev": "MOCK=true API_TOKEN=dev node --no-warnings=ExperimentalWarning server/index.js",
+    "bot": "node index.js",
+    "test": "node --no-warnings=ExperimentalWarning test/preservation.mjs"
   },
   "author": "Roger Rodrigues",
   "dependencies": {
+    "aws4fetch": "^1.0.20",
+    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "express": "^5.1.0",
     "puppeteer": "^24.1.1",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "socket.io": "^4.8.1"
   },
-  "license": "ISC"
+  "license": "ISC",
+  "engines": {
+    "node": ">=22.13"
+  }
 }

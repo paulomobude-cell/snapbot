@@ -82,6 +82,9 @@ export default class SnapBot {
         }
       });
 
+      // hook for setting up the page before Snapchat loads (request blocking, media capture)
+      if (this.onPageCreated) await this.onPageCreated(this.page, this.browser);
+
       await this.page.goto("https://www.snapchat.com/?original_referrer=none");
     } catch (error) {
       console.error(`Error while Starting Snapchat : ${error}`);
@@ -517,7 +520,7 @@ export default class SnapBot {
               if (borderElem) {
                 const color = getComputedStyle(borderElem).borderColor;
                 if (color === "rgb(242, 60, 87)") sender = "Me";
-                else if (color === "rgb(14, 173, 255)") sender = "Eren Yeager";
+                else if (color === "rgb(14, 173, 255)") sender = "Them";
                 else sender = "Unknown";
               }
             }
@@ -690,6 +693,243 @@ export default class SnapBot {
 
     const sendButton = await this.page.$("button[type='submit']"); 
     await sendButton.click();
+  }
+
+  // opens a chat by id (no-op if it's already open). Returns false if the chat isn't in the list
+  async openChat(chatId) {
+    const convoSelector = `[id="cv-${chatId}"]`;
+    if (await this.page.$(convoSelector)) return true;
+    const title = await this.page.$(`span[id="title-${chatId}"]`);
+    if (!title) return false;
+    await title.click();
+    try {
+      await this.page.waitForSelector(convoSelector, { timeout: 10000 });
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // returns what a chat currently shows as a flat list, or null if the chat isn't
+  // open (so callers can tell "not loaded" from "empty"). Items:
+  //   { kind: "text",   from, isMe, text, time }
+  //   { kind: "media",  from, isMe, text: "", time, src, mediaType: "image"|"video" }
+  //   { kind: "snap",   from, isMe, text: "", time, snapIndex }   tap-to-view snap tile
+  //   { kind: "notice", notice: "deleted", from, text, time }      "X deleted a chat"
+  async readMessages(chatId, chatName = "Them", options = {}) {
+    const {
+      deletedPattern = "\\bdeleted (a|an|the)? ?(chat|snap|message|photo|image|video|voice|audio|sticker|attachment)",
+      snapPattern = "\\b(tap to view|tap to replay|tap to load|new snap|received snap)\\b",
+    } = options;
+    return await this.page.evaluate(
+      (chatId, chatName, deletedPattern, snapPattern) => {
+        const $chatList = document.querySelector(`[id="cv-${chatId}"]`);
+        if (!$chatList) return null;
+
+        const ME = "rgb(242, 60, 87)";
+        const deletedRe = new RegExp(deletedPattern, "i");
+        const snapRe = new RegExp(snapPattern, "i");
+        const output = [];
+        let currentTime = "";
+        let snapIndex = 0;
+
+        const senderFromBorder = (el) => {
+          const borderElem = el.querySelector(".KB4Aq");
+          if (!borderElem) return null;
+          return getComputedStyle(borderElem).borderColor === ME ? "Me" : chatName;
+        };
+        const isContentImage = (img) => {
+          if (img.closest("header, span.ogn1z")) return false; // avatars, emoji
+          const w = img.naturalWidth || img.width;
+          const h = img.naturalHeight || img.height;
+          return w >= 64 && h >= 64;
+        };
+
+        const read = (sender, el) => {
+          const isMe = sender === "Me";
+          const base = { from: sender, isMe, time: currentTime };
+          const texts = [...el.querySelectorAll("span.ogn1z")];
+          const fullText = el.textContent.trim();
+
+          // "Sam deleted a chat" style notice in place of the removed message
+          if (texts.length === 0 && deletedRe.test(fullText) && fullText.length < 120) {
+            const who = fullText.split(/\s+deleted\b/i)[0].trim();
+            output.push({ kind: "notice", notice: "deleted", ...base, from: who || sender, text: fullText });
+            return;
+          }
+
+          // walk in DOM order so text and media keep their order
+          const nodes = el.querySelectorAll("span.ogn1z, img, video, button, [role='button']");
+          const seenTile = new Set();
+          for (const node of nodes) {
+            if (node.matches("span.ogn1z")) {
+              const text = node.textContent.trim();
+              if (text) output.push({ kind: "text", ...base, text });
+            } else if (node.tagName === "VIDEO") {
+              const src = node.currentSrc || node.src || node.querySelector("source")?.src;
+              if (src) output.push({ kind: "media", ...base, text: "", src, mediaType: "video" });
+            } else if (node.tagName === "IMG") {
+              if (isContentImage(node) && node.src) {
+                output.push({ kind: "media", ...base, text: "", src: node.src, mediaType: "image" });
+              }
+            } else if (!seenTile.has(node) && snapRe.test(node.textContent || node.getAttribute("aria-label") || "")) {
+              seenTile.add(node);
+              node.setAttribute("data-sb-snap", String(snapIndex));
+              output.push({ kind: "snap", ...base, text: "", snapIndex: snapIndex++ });
+            }
+          }
+        };
+
+        $chatList.querySelectorAll("li.T1yt2").forEach((li) => {
+          const timeElem = li.querySelector("time span");
+          if (timeElem) {
+            currentTime = timeElem.textContent.trim();
+            return;
+          }
+          const blocks = li.querySelectorAll("li");
+          if (blocks.length > 0) {
+            blocks.forEach((block) => {
+              const sender =
+                block.querySelector("header .nonIntl")?.textContent.trim() ||
+                senderFromBorder(block) ||
+                "Unknown";
+              read(sender, block);
+            });
+          } else {
+            read(senderFromBorder(li) || "Unknown", li);
+          }
+        });
+        return output;
+      },
+      chatId,
+      chatName,
+      deletedPattern,
+      snapPattern
+    );
+  }
+
+  // Answers matching requests with an empty gRPC "OK" instead of sending them, at
+  // browser level so workers are covered too. Used to stop read receipts / typing.
+  async blockRequests(patterns) {
+    if (this._blockSession) await this._blockSession.detach().catch(() => {});
+    if (!patterns.length) return;
+    const client = await this.browser.target().createCDPSession();
+    this._blockSession = client;
+    this.blockedLog = [];
+    client.on("Fetch.requestPaused", async (event) => {
+      const { requestId, request } = event;
+      try {
+        const origin = request.headers.Origin || request.headers.origin;
+        const headers = [
+          { name: "content-type", value: "application/grpc-web+proto" },
+          { name: "grpc-status", value: "0" },
+          { name: "grpc-message", value: "" },
+        ];
+        if (origin) {
+          headers.push(
+            { name: "access-control-allow-origin", value: origin },
+            { name: "access-control-allow-credentials", value: "true" },
+            { name: "access-control-expose-headers", value: "grpc-status,grpc-message" }
+          );
+        }
+        if (request.method === "OPTIONS") {
+          headers.push(
+            { name: "access-control-allow-methods", value: "POST, OPTIONS" },
+            { name: "access-control-allow-headers", value: request.headers["Access-Control-Request-Headers"] || "*" }
+          );
+        }
+        this.blockedLog.push({ url: request.url, at: Date.now() });
+        if (this.blockedLog.length > 100) this.blockedLog.shift();
+        await client.send("Fetch.fulfillRequest", { requestId, responseCode: 200, responseHeaders: headers, body: "" });
+      } catch (error) {
+        await client.send("Fetch.continueRequest", { requestId }).catch(() => {});
+      }
+    });
+    await client.send("Fetch.enable", {
+      patterns: patterns.map((p) => ({ urlPattern: `*${p}*`, requestStage: "Request" })),
+    });
+  }
+
+  // Keeps a reference to every Blob the page turns into an object URL. Snapchat
+  // decrypts media into blobs, so this lets us read images/videos (even ones the
+  // page already revoked, like a closed one-time snap). Call before navigating.
+  async installMediaCapture(page = this.page, maxBytes = 200 * 1024 * 1024) {
+    await page.evaluateOnNewDocument((maxBytes) => {
+      const store = new Map(); // url -> { blob, at }
+      let total = 0;
+      const original = URL.createObjectURL;
+      URL.createObjectURL = function (obj) {
+        const url = original.apply(this, arguments);
+        try {
+          if (obj instanceof Blob && obj.size > 2048) {
+            store.set(url, { blob: obj, at: Date.now() });
+            total += obj.size;
+            for (const [key, value] of store) {
+              if (total <= maxBytes) break;
+              store.delete(key);
+              total -= value.blob.size;
+            }
+          }
+        } catch (error) {
+          // never break the page
+        }
+        return url;
+      };
+      Object.defineProperty(window, "__sbBlobs", { value: store, enumerable: false });
+    }, maxBytes);
+  }
+
+  // Reads media by URL (blob: from the capture map, or anything fetchable).
+  // Returns { base64, type, size } or null.
+  async readMedia(src) {
+    return await this.page.evaluate(async (src) => {
+      try {
+        const kept = window.__sbBlobs?.get(src)?.blob;
+        const blob = kept || (await (await fetch(src)).blob());
+        const buffer = new Uint8Array(await blob.arrayBuffer());
+        let binary = "";
+        for (let i = 0; i < buffer.length; i += 0x8000) {
+          binary += String.fromCharCode.apply(null, buffer.subarray(i, i + 0x8000));
+        }
+        return { base64: btoa(binary), type: blob.type, size: blob.size };
+      } catch (error) {
+        return null;
+      }
+    }, src);
+  }
+
+  // Opens the nth tap-to-view snap tile found by readMessages, grabs the media the
+  // viewer decrypts, then closes the viewer. Returns readMedia()'s result or null.
+  async openReceivedSnap(snapIndex, { timeout = 6000 } = {}) {
+    const tile = await this.page.$(`[data-sb-snap="${snapIndex}"]`);
+    if (!tile) return null;
+    const startedAt = await this.page.evaluate(() => Date.now());
+    await tile.click();
+    let src = null;
+    const end = Date.now() + timeout;
+    while (!src && Date.now() < end) {
+      await delay(400);
+      src = await this.page.evaluate((startedAt) => {
+        let best = null;
+        for (const [url, { blob, at }] of window.__sbBlobs || []) {
+          if (at >= startedAt && (!best || blob.size > best.size)) best = { url, size: blob.size };
+        }
+        return best?.url || null;
+      }, startedAt);
+    }
+    if (src) await delay(500); // let a video finish loading into its blob
+    const media = src ? await this.readMedia(src) : null;
+    await this.page.keyboard.press("Escape");
+    await delay(600);
+    return media;
+  }
+
+  // types a message into the currently open chat
+  async typeMessage(text) {
+    const textbox = 'div[role="textbox"].euyIb';
+    await this.page.waitForSelector(textbox, { timeout: 10000 });
+    await this.page.type(textbox, text, { delay: 30 });
+    await this.page.keyboard.press("Enter");
   }
 
   // add custom methods
