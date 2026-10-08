@@ -1,305 +1,284 @@
-import { useEffect, useReducer, useRef, useState } from "react";
-import { io } from "socket.io-client";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useBackend } from "./state.js";
+import { Icon } from "./util.jsx";
+import AccountRail from "./components/AccountRail.jsx";
+import ChatList from "./components/ChatList.jsx";
+import Conversation from "./components/Conversation.jsx";
+import LiveScreen from "./components/LiveScreen.jsx";
+import ActivityPanel from "./components/ActivityPanel.jsx";
+import AddAccount from "./components/AddAccount.jsx";
+import AccountSettings from "./components/AccountSettings.jsx";
+import Toasts, { useToasts } from "./components/Toasts.jsx";
 
 const DEFAULT_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
 
-function loadSettings() {
+function load(key, fallback) {
   try {
-    return JSON.parse(localStorage.getItem("snapbot") || "null");
+    return JSON.parse(localStorage.getItem(key)) ?? fallback;
   } catch {
-    return null;
+    return fallback;
+  }
+}
+function save(key, value) {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // storage unavailable
   }
 }
 
-// messages: { [chatId]: Message[] } — only what still exists on the backend
-function messagesReducer(state, action) {
-  switch (action.type) {
-    case "reset":
-      return {};
-    case "snapshot":
-      // authoritative list for the chat: anything not in it is gone
-      return { ...state, [action.chatId]: action.messages };
-    case "new": {
-      const list = state[action.message.chatId] || [];
-      if (list.some((m) => m.id === action.message.id)) return state;
-      return { ...state, [action.message.chatId]: [...list, action.message] };
-    }
-    case "remove": {
-      const list = state[action.chatId];
-      if (!list) return state;
-      return { ...state, [action.chatId]: list.filter((m) => m.id !== action.id) };
-    }
-    case "expire": {
-      let changed = false;
-      const next = {};
-      for (const [chatId, list] of Object.entries(state)) {
-        const kept = list.filter((m) => m.expiresAt > action.now);
-        if (kept.length !== list.length) changed = true;
-        next[chatId] = kept;
-      }
-      return changed ? next : state;
-    }
-    default:
-      return state;
-  }
-}
-
-function timeLeft(ms) {
-  if (ms <= 0) return "now";
-  const h = Math.floor(ms / 3600000);
-  const m = Math.floor((ms % 3600000) / 60000);
-  if (h > 0) return `${h}h ${m}m`;
-  const s = Math.floor((ms % 60000) / 1000);
-  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+export function useTheme() {
+  const [theme, setTheme] = useState(() => load("snapbot:theme", "system"));
+  useEffect(() => {
+    if (theme === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", theme);
+    save("snapbot:theme", theme);
+  }, [theme]);
+  return [theme, setTheme];
 }
 
 export default function App() {
-  const [settings, setSettings] = useState(loadSettings);
-  if (!settings) return <Setup onSave={(s) => {
-    localStorage.setItem("snapbot", JSON.stringify(s));
-    setSettings(s);
-  }} />;
-  return <Dashboard settings={settings} onSignOut={() => {
-    localStorage.removeItem("snapbot");
-    setSettings(null);
-  }} />;
+  const [settings, setSettings] = useState(() => load("snapbot", null));
+  useTheme();
+  if (!settings) {
+    return <Setup onSave={(s) => { save("snapbot", s); setSettings(s); }} />;
+  }
+  return <Dashboard settings={settings} onDisconnect={() => { save("snapbot", null); setSettings(null); }} />;
 }
 
 function Setup({ onSave }) {
   const [url, setUrl] = useState(DEFAULT_URL);
   const [token, setToken] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState("");
   return (
     <div className="setup">
-      <form onSubmit={(e) => {
+      <form className="card setup-card" onSubmit={async (e) => {
         e.preventDefault();
-        onSave({ url: url.replace(/\/+$/, ""), token });
+        const clean = url.trim().replace(/\/+$/, "");
+        setChecking(true);
+        setError("");
+        try {
+          const res = await fetch(`${clean}/api/accounts`, { headers: { Authorization: `Bearer ${token}` } });
+          if (res.status === 401) throw new Error("Wrong API token");
+          if (!res.ok) throw new Error(`Backend answered ${res.status}`);
+          onSave({ url: clean, token });
+        } catch (err) {
+          setError(err.message === "Failed to fetch" ? "Can't reach the backend (URL or CORS_ORIGIN?)" : err.message);
+        } finally {
+          setChecking(false);
+        }
       }}>
-        <h1>SnapBot</h1>
-        <label>Backend URL
-          <input value={url} onChange={(e) => setUrl(e.target.value)} required />
+        <div className="brand"><span className="logo">👻</span> SnapBot</div>
+        <p className="muted">Connect to your SnapBot backend.</p>
+        <label className="field">
+          <span>Backend URL</span>
+          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://your-app.up.railway.app" required />
         </label>
-        <label>API token
-          <input type="password" value={token} onChange={(e) => setToken(e.target.value)} required />
+        <label className="field">
+          <span>API token</span>
+          <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="API_TOKEN from Railway" required autoFocus />
         </label>
-        <button type="submit">Connect</button>
+        {error && <div className="alert">{error}</div>}
+        <button className="btn primary" disabled={checking}>{checking ? "Checking…" : "Connect"}</button>
       </form>
     </div>
   );
 }
 
-function Dashboard({ settings, onSignOut }) {
-  const [socket, setSocket] = useState(null);
-  const [connected, setConnected] = useState(false);
-  const [connError, setConnError] = useState("");
-  const [status, setStatus] = useState({ status: "stopped" });
-  const [chats, setChats] = useState([]);
-  const [activeChat, setActiveChat] = useState(null);
-  const [messages, dispatch] = useReducer(messagesReducer, {});
-  const [clockOffset, setClockOffset] = useState(0);
-  const [now, setNow] = useState(Date.now());
-  const [showScreen, setShowScreen] = useState(false);
-  const activeRef = useRef(null);
-  activeRef.current = activeChat;
+function Dashboard({ settings, onDisconnect }) {
+  const { toasts, toast, dismiss } = useToasts();
+  const [notify, setNotify] = useState(() => load("snapbot:notify", false));
+  const [view, setViewState] = useState(() => load("snapbot:view", { accountId: null, chatId: null }));
+  const [panel, setPanel] = useState(null); // null | "screen" | "activity"
+  const [modal, setModal] = useState(null); // null | "add" | "settings"
+  const [theme, setTheme] = useTheme();
+
+  const onMessage = useCallback((accountId, message) => {
+    if (!notify || !("Notification" in window) || Notification.permission !== "granted") return;
+    const n = new Notification(message.from, { body: message.text, tag: message.id });
+    n.onclick = () => { window.focus(); n.close(); };
+  }, [notify]);
+
+  const { state, dispatch, socket, conn, now, call, setView } = useBackend(settings, { onMessage });
+  const { accounts } = state;
+
+  // keep a valid account selected
+  const accountId = accounts.some((a) => a.id === view.accountId) ? view.accountId : accounts[0]?.id || null;
+  const chatId = accountId === view.accountId ? view.chatId : null;
+  const account = accounts.find((a) => a.id === accountId);
+  const status = state.status[accountId]?.status || account?.status;
 
   useEffect(() => {
-    const s = io(settings.url, { auth: { token: settings.token } });
-    s.on("connect", () => {
-      setConnected(true);
-      setConnError("");
-      // drop everything cached: the server re-sends what still exists
-      dispatch({ type: "reset" });
-      if (activeRef.current) s.emit("chat:select", { chatId: activeRef.current });
-    });
-    s.on("disconnect", () => setConnected(false));
-    s.on("connect_error", (err) => setConnError(err.message));
-    s.on("config", (c) => setClockOffset(c.now - Date.now()));
-    s.on("status", setStatus);
-    s.on("chats", setChats);
-    s.on("chat:snapshot", ({ chatId, messages }) => dispatch({ type: "snapshot", chatId, messages }));
-    s.on("message:new", (message) => dispatch({ type: "new", message }));
-    s.on("message:deleted", ({ id, chatId }) => dispatch({ type: "remove", id, chatId }));
-    s.on("message:expired", ({ id, chatId }) => dispatch({ type: "remove", id, chatId }));
-    setSocket(s);
-    return () => s.disconnect();
-  }, [settings]);
+    setView({ accountId, chatId });
+    save("snapbot:view", { accountId, chatId });
+  }, [accountId, chatId]);
 
-  // hide expired messages locally too, even if the socket is down
+  // load the account's state whenever it's opened (and after reconnects, via state.js)
   useEffect(() => {
-    const t = setInterval(() => {
-      const serverNow = Date.now() + clockOffset;
-      setNow(serverNow);
-      dispatch({ type: "expire", now: serverNow });
-    }, 1000);
-    return () => clearInterval(t);
-  }, [clockOffset]);
-
+    if (accountId && conn.connected) call("account:open", { accountId }).catch(() => {});
+  }, [accountId, conn.connected]);
   useEffect(() => {
-    if (status.status === "needs_login") setShowScreen(true);
-  }, [status.status]);
+    if (accountId && chatId && conn.connected) {
+      call("chat:select", { accountId, chatId }).catch((e) => toast(e.message, "error"));
+      dispatch({ type: "read", accountId, chatId });
+    }
+  }, [accountId, chatId, conn.connected]);
 
-  const selectChat = (chatId) => {
-    setActiveChat(chatId);
-    socket?.emit("chat:select", { chatId });
+  // the live screen is how you log in, so open it when an account needs that
+  useEffect(() => {
+    if (status === "needs_login") setPanel("screen");
+  }, [status, accountId]);
+
+  // first run: nothing to show yet, so go straight to adding an account
+  useEffect(() => {
+    if (conn.connected && accounts.length === 0) setModal("add");
+  }, [conn.connected, accounts.length]);
+
+  const totalUnread = useMemo(() => Object.values(state.unread).reduce(
+    (sum, chats) => sum + Object.values(chats).reduce((s, ids) => s + ids.length, 0), 0
+  ), [state.unread]);
+  useEffect(() => {
+    document.title = totalUnread ? `(${totalUnread}) SnapBot` : "SnapBot";
+  }, [totalUnread]);
+
+  // reading the open chat while the tab is visible clears its badge
+  useEffect(() => {
+    const onVisible = () => !document.hidden && accountId && chatId && dispatch({ type: "read", accountId, chatId });
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [accountId, chatId]);
+
+  const selectAccount = (id) => setViewState({ accountId: id, chatId: id === accountId ? chatId : null });
+  const selectChat = (id) => setViewState({ accountId, chatId: id });
+
+  const run = (event, payload, success) =>
+    call(event, payload).then((r) => { if (success) toast(success, "success"); return r; })
+      .catch((e) => { toast(e.message, "error"); throw e; });
+
+  const toggleNotify = async () => {
+    if (notify) return setNotify(false), save("snapbot:notify", false);
+    if (!("Notification" in window)) return toast("This browser doesn't support notifications", "error");
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") return toast("Notifications are blocked for this site", "error");
+    setNotify(true);
+    save("snapbot:notify", true);
+    toast("You'll get a notification for new chats", "success");
   };
 
-  const chat = chats.find((c) => c.id === activeChat);
-  const list = messages[activeChat] || [];
+  const chats = state.chats[accountId] || [];
+  const chat = chats.find((c) => c.id === chatId);
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <strong>SnapBot</strong>
-        <span className={`pill ${connected ? status.status : "offline"}`}>
-          {connected ? status.status.replace("_", " ") : connError || "offline"}
-        </span>
-        {status.error && <span className="error">{status.error}</span>}
-        <div className="spacer" />
-        <button onClick={() => setShowScreen((v) => !v)}>{showScreen ? "Hide screen" : "Live screen"}</button>
-        <button onClick={() => socket?.emit("session:restart")}>Restart</button>
-        <button onClick={() => confirm("Log out of Snapchat?") && socket?.emit("session:logout")}>Log out</button>
-        <button onClick={onSignOut}>Disconnect</button>
-      </header>
+    <div className={`app ${chat ? "has-chat" : ""} ${panel ? "has-panel" : ""}`}>
+      <AccountRail
+        accounts={accounts}
+        status={state.status}
+        unread={state.unread}
+        activeId={accountId}
+        onSelect={selectAccount}
+        onAdd={() => setModal("add")}
+        canAdd={accounts.length < state.config.maxAccounts}
+      />
 
-      {showScreen && socket && <LiveScreen socket={socket} status={status.status} />}
-
-      <div className="main">
-        <aside className="chats">
-          {chats.length === 0 && <p className="muted pad">No chats yet</p>}
-          {chats.map((c) => (
-            <button key={c.id} className={`chat ${c.id === activeChat ? "active" : ""}`} onClick={() => selectChat(c.id)}>
-              <span className="name">{c.name}</span>
-              <span className="muted small">
-                {[c.status?.type, c.status?.time, c.status?.streak].filter(Boolean).join(" · ")}
-              </span>
+      <ChatList
+        account={account}
+        status={status}
+        error={state.status[accountId]?.error}
+        chats={chats}
+        messages={state.messages[accountId] || {}}
+        unread={state.unread[accountId] || {}}
+        activeId={chatId}
+        now={now}
+        onSelect={selectChat}
+        toolbar={
+          <>
+            <button className={`icon-btn ${panel === "screen" ? "on" : ""}`} title="Live screen" onClick={() => setPanel(panel === "screen" ? null : "screen")}><Icon name="screen" /></button>
+            <button className={`icon-btn ${panel === "activity" ? "on" : ""}`} title="Activity" onClick={() => setPanel(panel === "activity" ? null : "activity")}><Icon name="activity" /></button>
+            <button className={`icon-btn ${notify ? "on" : ""}`} title={notify ? "Notifications on" : "Notifications off"} onClick={toggleNotify}><Icon name="bell" /></button>
+            <button className="icon-btn" title="Theme" onClick={() => setTheme(theme === "dark" ? "light" : theme === "light" ? "system" : "dark")}>
+              <Icon name={theme === "dark" ? "moon" : "sun"} />
             </button>
-          ))}
-        </aside>
+            {account && <button className="icon-btn" title="Account settings" onClick={() => setModal("settings")}><Icon name="settings" /></button>}
+          </>
+        }
+      />
 
-        <section className="conversation">
-          {!chat ? (
-            <p className="muted pad">Select a chat</p>
-          ) : (
-            <>
-              <div className="convo-header">{chat.name}</div>
-              <MessageList messages={list} now={now} />
-              <Composer onSend={(text) => new Promise((resolve) =>
-                socket.emit("message:send", { chatId: chat.id, text }, resolve)
-              )} />
-            </>
+      <Conversation
+        key={`${accountId}:${chatId}`}
+        chat={chat}
+        status={status}
+        messages={(state.messages[accountId] || {})[chatId] || []}
+        ttlMs={state.config.ttlMs}
+        now={now}
+        onBack={() => selectChat(null)}
+        onSend={(text) => call("message:send", { accountId, chatId, text })}
+        onCopy={(text) => navigator.clipboard?.writeText(text).then(() => toast("Copied", "success"))}
+        onOpenScreen={() => setPanel("screen")}
+      />
+
+      {panel && account && (
+        <aside className="panel">
+          {panel === "screen" && (
+            <LiveScreen
+              key={accountId}
+              account={account}
+              status={status}
+              call={call}
+              socket={socket}
+              onClose={() => setPanel(null)}
+              toast={toast}
+            />
           )}
-        </section>
-      </div>
-    </div>
-  );
-}
+          {panel === "activity" && (
+            <ActivityPanel
+              events={state.activity[accountId] || []}
+              chats={chats}
+              now={now}
+              onOpenChat={(id) => selectChat(id)}
+              onClose={() => setPanel(null)}
+            />
+          )}
+        </aside>
+      )}
 
-function MessageList({ messages, now }) {
-  const ref = useRef(null);
-  useEffect(() => {
-    ref.current?.scrollTo({ top: ref.current.scrollHeight });
-  }, [messages.length]);
-  if (messages.length === 0) {
-    return <div className="messages"><p className="muted pad">No messages (deleted and expired ones are removed)</p></div>;
-  }
-  return (
-    <div className="messages" ref={ref}>
-      {messages.map((m) => (
-        <div key={m.id} className={`msg ${m.isMe ? "me" : "them"}`}>
-          {!m.isMe && <div className="from">{m.from}</div>}
-          <div className="bubble">{m.text}</div>
-          <div className="meta">{m.time} · disappears in {timeLeft(m.expiresAt - now)}</div>
+      {!conn.connected && (
+        <div className="conn-banner">
+          <span className="spinner" /> {conn.error === "Unauthorized" ? "API token rejected" : conn.error ? `Can't reach backend: ${conn.error}` : "Reconnecting…"}
+          <button className="btn small" onClick={onDisconnect}>Change backend</button>
         </div>
-      ))}
-    </div>
-  );
-}
+      )}
 
-function Composer({ onSend }) {
-  const [text, setText] = useState("");
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState("");
-  return (
-    <form className="composer" onSubmit={async (e) => {
-      e.preventDefault();
-      if (!text.trim()) return;
-      setSending(true);
-      const res = await onSend(text);
-      setSending(false);
-      if (res?.ok) {
-        setText("");
-        setError("");
-      } else setError(res?.error || "Failed to send");
-    }}>
-      {error && <span className="error">{error}</span>}
-      <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Send a chat" disabled={sending} />
-      <button type="submit" disabled={sending}>Send</button>
-    </form>
-  );
-}
+      {modal === "add" && (
+        <AddAccount
+          first={accounts.length === 0}
+          onClose={() => setModal(null)}
+          onCreate={async (data) => {
+            const created = await run("account:create", data, "Account added");
+            setModal(null);
+            setViewState({ accountId: created.id, chatId: null });
+            if (!data.password) setPanel("screen");
+          }}
+        />
+      )}
+      {modal === "settings" && account && (
+        <AccountSettings
+          account={account}
+          status={status}
+          onClose={() => setModal(null)}
+          onSave={(data) => run("account:update", { accountId, ...data }, "Saved")}
+          onRestart={() => run("account:restart", { accountId }, "Restarting session")}
+          onLogout={() => run("account:logout", { accountId }, "Logged out")}
+          onRemove={async () => {
+            await run("account:remove", { accountId }, "Account removed");
+            setModal(null);
+          }}
+          onDisconnect={onDisconnect}
+        />
+      )}
 
-// Mirrors the backend's Chrome so you can log in / solve captcha / 2FA
-function LiveScreen({ socket, status }) {
-  const [frame, setFrame] = useState(null);
-  const [typed, setTyped] = useState("");
-  const [creds, setCreds] = useState({ username: "", password: "" });
-
-  useEffect(() => {
-    const onFrame = (data) => setFrame(data);
-    socket.on("screen:frame", onFrame);
-    const start = () => socket.emit("screen:start");
-    start();
-    socket.on("connect", start);
-    return () => {
-      socket.off("screen:frame", onFrame);
-      socket.off("connect", start);
-      socket.emit("screen:stop");
-    };
-  }, [socket]);
-
-  return (
-    <div className="screen">
-      <div className="screen-view">
-        {frame ? (
-          <img
-            src={`data:image/jpeg;base64,${frame}`}
-            alt="Snapchat session"
-            onClick={(e) => {
-              const r = e.currentTarget.getBoundingClientRect();
-              socket.emit("screen:click", { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height });
-            }}
-            onWheel={(e) => socket.emit("screen:scroll", { deltaY: e.deltaY })}
-          />
-        ) : (
-          <p className="muted pad">Waiting for the browser…</p>
-        )}
-      </div>
-      <div className="screen-controls">
-        {status === "needs_login" && (
-          <form onSubmit={(e) => {
-            e.preventDefault();
-            socket.emit("session:login", creds);
-          }}>
-            <strong>Log in to Snapchat</strong>
-            <input placeholder="Username or email" value={creds.username} onChange={(e) => setCreds({ ...creds, username: e.target.value })} />
-            <input type="password" placeholder="Password" value={creds.password} onChange={(e) => setCreds({ ...creds, password: e.target.value })} />
-            <button type="submit">Log in</button>
-            <p className="muted small">Or click and type directly on the screen (captcha, 2FA codes).</p>
-          </form>
-        )}
-        <form onSubmit={(e) => {
-          e.preventDefault();
-          socket.emit("screen:type", { text: typed });
-          setTyped("");
-        }}>
-          <input placeholder="Type into the page" value={typed} onChange={(e) => setTyped(e.target.value)} />
-          <button type="submit">Type</button>
-        </form>
-        <div className="keys">
-          {["Enter", "Tab", "Backspace", "Escape"].map((key) => (
-            <button key={key} type="button" onClick={() => socket.emit("screen:key", { key })}>{key}</button>
-          ))}
-        </div>
-      </div>
+      <Toasts toasts={toasts} onDismiss={dismiss} />
     </div>
   );
 }

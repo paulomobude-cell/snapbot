@@ -6,8 +6,8 @@
   "devDependencies": {},
   "type": "module",
   "scripts": {
-    "start": "node server/index.js",
-    "dev": "MOCK=true API_TOKEN=dev node server/index.js",
+    "start": "node --no-warnings=ExperimentalWarning server/index.js",
+    "dev": "MOCK=true API_TOKEN=dev node --no-warnings=ExperimentalWarning server/index.js",
     "bot": "node index.js"
   },
   "author": "Roger Rodrigues",
@@ -22,6 +22,6 @@
   },
   "license": "ISC",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   }
 }

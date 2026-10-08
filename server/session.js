@@ -3,6 +3,8 @@ import fs from "fs";
 import path from "path";
 import SnapBot from "../snapbot.js";
 
+const LOGIN_URL = "https://www.snapchat.com/?original_referrer=none";
+const LOGIN_FORM = '#ai_input, input[name="accountIdentifier"]';
 const CHAT_LIST = "div.ReactVirtualized__Grid__innerScrollContainer";
 
 function delay(time) {
@@ -12,9 +14,11 @@ function delay(time) {
 // Runs one Snapchat Web session and keeps the MessageStore in sync with it.
 // Emits: status, chats, screen:frame
 export default class Session extends EventEmitter {
-  constructor({ store, config, BotClass = SnapBot }) {
+  constructor({ store, config, profileDir, credentials = null, BotClass = SnapBot }) {
     super();
     this.BotClass = BotClass;
+    this.profileDir = profileDir;
+    this.credentials = credentials; // { username, password } for auto re-login
     this.store = store;
     this.config = config;
     this.bot = null;
@@ -51,15 +55,16 @@ export default class Session extends EventEmitter {
     if (this.status !== "stopped" && this.status !== "error") return;
     this.setStatus("starting");
     try {
-      const profileDir = path.join(this.config.dataDir, "chrome-profile");
+      const profileDir = this.profileDir;
       fs.mkdirSync(profileDir, { recursive: true });
       // a crashed container leaves Chrome's lock behind and blocks relaunch
       for (const lock of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
         fs.rmSync(path.join(profileDir, lock), { force: true });
       }
 
-      this.bot = new this.BotClass();
-      await this.bot.launchSnapchat({
+      const bot = new this.BotClass();
+      this.bot = bot;
+      await bot.launchSnapchat({
         headless: this.config.headless,
         executablePath: this.config.chromePath || undefined,
         userDataDir: profileDir,
@@ -73,7 +78,12 @@ export default class Session extends EventEmitter {
           "--window-size=1920,1080",
         ],
       });
-      if (!this.bot.page) throw new Error("Browser failed to start");
+      if (this.status === "stopped" || this.bot !== bot) {
+        // stopped (or account removed) while Chrome was launching
+        await bot.browser?.close().catch(() => {});
+        return;
+      }
+      if (!bot.page) throw new Error("Browser failed to start");
       this.bot.browser.on("disconnected", () => {
         if (this.status !== "stopped") {
           this.stopLoop();
@@ -82,10 +92,10 @@ export default class Session extends EventEmitter {
       });
       if (this.viewers > 0) await this.startScreencast();
 
-      if (await this.waitForChatList(20000)) {
+      if ((await this.waitForPage(30000)) === "chats") {
         await this.onLoggedIn();
-      } else if (this.config.username && this.config.password) {
-        await this.login(this.config.username, this.config.password);
+      } else if (this.credentials) {
+        await this.login(this.credentials.username, this.credentials.password);
       } else {
         this.setStatus("needs_login");
         this.watchForManualLogin();
@@ -97,8 +107,18 @@ export default class Session extends EventEmitter {
   }
 
   async login(username, password) {
+    if (!this.bot?.page) throw new Error("Session not started");
     this.setStatus("logging_in");
-    await this.run(() => this.bot.login({ username, password }));
+    await this.run(async () => {
+      // get back to the login form if the page is somewhere else (error page, logged out)
+      const onForm = await this.bot.page
+        .$(LOGIN_FORM)
+        .catch(() => null);
+      if (!onForm && this.bot.page.goto) {
+        await this.bot.page.goto(LOGIN_URL, { waitUntil: "networkidle2" }).catch(() => {});
+      }
+      await this.bot.login({ username, password });
+    });
     if (await this.waitForChatList(15000)) {
       await this.onLoggedIn();
     } else {
@@ -116,6 +136,26 @@ export default class Session extends EventEmitter {
     } catch (error) {
       return false; // page navigating
     }
+  }
+
+  async hasLoginForm() {
+    try {
+      if (this.bot.hasLoginForm) return await this.bot.hasLoginForm();
+      return !!(await this.bot.page.$(LOGIN_FORM));
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // resolves "chats" | "login" | null (neither showed up: error page, captcha...)
+  async waitForPage(timeout) {
+    const end = Date.now() + timeout;
+    while (Date.now() < end) {
+      if (await this.hasChatList()) return "chats";
+      if (await this.hasLoginForm()) return "login";
+      await delay(1000);
+    }
+    return null;
   }
 
   async waitForChatList(timeout) {
@@ -161,6 +201,7 @@ export default class Session extends EventEmitter {
     try {
       await this.syncChats();
     } catch (error) {
+      if (this.status !== "connected") return; // stopped mid-sync
       console.error("Sync failed", error.message);
     }
     this.scheduleLoop(this.config.syncIntervalMs);
@@ -180,6 +221,7 @@ export default class Session extends EventEmitter {
     const fullSync = now - this.lastFullSync > this.config.fullSyncIntervalMs;
     if (fullSync) this.lastFullSync = now;
 
+    const held = new Set(this.store.chatIds());
     const toSync = new Set();
     if (this.activeChatId) toSync.add(this.activeChatId);
     for (const chat of chats) {
@@ -188,7 +230,7 @@ export default class Session extends EventEmitter {
       this.lastStatus.set(chat.id, statusKey);
       // sync on new activity; on a full sync re-check every chat we hold messages
       // for, so deletions and Snapchat's own expiry are picked up
-      if (changed || (fullSync && this.store.chats.has(chat.id))) {
+      if (changed || (fullSync && held.has(chat.id))) {
         toSync.add(chat.id);
       }
     }

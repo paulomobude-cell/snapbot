@@ -16,4 +16,4 @@ RUN npm ci --omit=dev
 COPY snapbot.js ./
 COPY server ./server
 
-CMD ["node", "server/index.js"]
+CMD ["node", "--no-warnings=ExperimentalWarning", "server/index.js"]
