@@ -807,22 +807,25 @@ export default class SnapBot {
         return await this.visibleChatId().catch(() => null) === chatId;
       }
     };
+    // The span itself may be off-screen or non-interactive in some Snapchat
+    // layouts. Retry the exact containing chat row even if its child click
+    // THROWS (not only when it fails to render a chat).
+    let lastError = null;
     try {
       await title.click();
       if (await waitForVisibleChat()) return true;
-      // Some Snapchat layouts attach the click handler to the whole list row.
-      // Only click the exact row containing the matched stable conversation ID.
+    } catch (error) { lastError = error; }
+    try {
       const rowHandle = await title.evaluateHandle(node => node.closest('[role="listitem"]'));
       const row = rowHandle.asElement();
       if (row) {
         await row.click();
         if (await waitForVisibleChat()) return true;
       }
-    } catch (error) {
-      this.lastChatOpenReason = "Snapchat chat row couldn't be selected: " + String(error.message || error).slice(0,150);
-      return false;
-    }
-    this.lastChatOpenReason = "Chat row was selected but Snapchat did not show the conversation";
+    } catch (error) { lastError = error; }
+    this.lastChatOpenReason = lastError
+      ? "Snapchat couldn't open this chat row: " + String(lastError.message || lastError).slice(0,150)
+      : "Chat row was selected but Snapchat did not show the conversation";
     return false;
   }
 

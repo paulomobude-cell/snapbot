@@ -45,6 +45,10 @@ try {
   legacyRow.querySelectorAll = selector => selector === "li" ? [legacyBubble] : [];
   const savedPhoto = el("img", "", { src:"blob:saved-photo", width:480, height:620 });
   const savedVideo = el("video", "", { src:"blob:saved-video", width:400, height:300 });
+  // Snapchat wraps many saved images in interactive containers. That should
+  // not cause a visible saved photo to disappear from the archive.
+  savedPhoto.closest = selector => selector === "button, [role='button']"
+    ? { getAttribute: () => "Saved image", textContent: "Saved image" } : null;
   savedVideo.currentSrc = "blob:saved-video";
   globalThis.document = { getElementById: id => id === "cv-friend" ? ({
     textContent: "caption and saved media",

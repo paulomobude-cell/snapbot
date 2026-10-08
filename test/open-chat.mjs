@@ -30,4 +30,9 @@ root=false; visible=null; allowRow=false;
 bot.page.waitForSelector=async()=>{ throw Error("not yet visible"); };
 assert.equal(await bot.openChat("c1"),false,"should fail safely if neither click opens the requested chat");
 assert.match(bot.lastChatOpenReason,/did not show/);
-console.log("Snapchat openChat fallback checks passed: exact row retry, visible root, safe refusal.");
+// If the inner title is not clickable, the enclosing exact-ID row still is.
+root=false; visible=null; allowRow=true; title.click=async()=>{titleClicks++; throw Error("span detached during virtualization");};
+bot.page.waitForSelector=async()=>root ? {} : Promise.reject(Error("not visible yet"));
+assert.equal(await bot.openChat("c1"),true,"fallback row works after title click throws");
+assert.equal(bot.lastChatOpenReason,null);
+console.log("Snapchat openChat fallback checks passed: exact row retry, visible root, safe refusal, detached title.");

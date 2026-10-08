@@ -74,9 +74,15 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
     return { width: node.naturalWidth || node.videoWidth || node.width || rect?.width || 0,
       height: node.naturalHeight || node.videoHeight || node.height || rect?.height || 0 };
   };
-  const mediaContainer = node => !node.closest?.(
-    "header, nav, footer, aside, button, [role='button'], [role='textbox'], [contenteditable], [class*='avatar' i], [aria-hidden='true']"
-  );
+  const mediaContainer = node => {
+    if (node.closest?.("header, nav, footer, aside, [role='textbox'], [contenteditable], [class*='avatar' i], [aria-hidden='true']")) return false;
+    const control = node.closest?.("button, [role='button']");
+    // Saved photos/videos can themselves be clickable. Don't mistake that
+    // for an unopened Snap tile: only skip controls explicitly asking to open
+    // an unavailable/view-once Snap.
+    const label = control?.getAttribute?.("aria-label") || control?.textContent || "";
+    return !control || !/(tap|click) to view|new snap|tap to replay|received snap/i.test(label);
+  };
   const addMedia = (node, forcedSender) => {
     if (seenMediaNodes.has(node) || !mediaContainer(node)) return;
     let src = null;
