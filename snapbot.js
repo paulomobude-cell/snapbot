@@ -561,6 +561,35 @@ export default class SnapBot {
     }, userId);
   }
 
+  // Observe rendered sidebar changes without selecting, opening or reading a
+  // conversation. The browser tells Node that *something* changed, never
+  // transfers message content through this observer.
+  async watchChatList(onChange) {
+    this._sidebarListener = onChange;
+    if (!this._sidebarBridgeInstalled) {
+      await this.page.exposeFunction("__snapbotSidebarActivity", () => {
+        try { this._sidebarListener?.(); } catch {}
+      });
+      this._sidebarBridgeInstalled = true;
+    }
+    return this.page.evaluate(() => {
+      const root = document.querySelector("div.ReactVirtualized__Grid__innerScrollContainer");
+      if (!root || typeof MutationObserver === "undefined") return false;
+      window.__snapbotSidebarObserver?.disconnect();
+      if (window.__snapbotSidebarTimer) clearTimeout(window.__snapbotSidebarTimer);
+      const observer = new MutationObserver((changes) => {
+        if (!changes.some(change => change.type === "childList" || change.type === "characterData")) return;
+        if (window.__snapbotSidebarTimer) clearTimeout(window.__snapbotSidebarTimer);
+        window.__snapbotSidebarTimer = setTimeout(() => {
+          Promise.resolve(window.__snapbotSidebarActivity?.()).catch(() => {});
+        }, 250);
+      });
+      observer.observe(root, { childList: true, characterData: true, subtree: true });
+      window.__snapbotSidebarObserver = observer;
+      return true;
+    });
+  }
+
   // Read all virtualized chats on initial/periodic discovery, but only
   // currently mounted rows on fast refresh. Each snapshot uses a single
   // browser evaluate rather than stale Puppeteer element handles.
