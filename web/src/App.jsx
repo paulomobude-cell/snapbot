@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useBackend } from "./state.js";
+import { normalizeBackendUrl } from "./backend-url.js";
 import { Icon } from "./util.jsx";
 import AccountRail from "./components/AccountRail.jsx";
 import ChatList from "./components/ChatList.jsx";
@@ -12,7 +13,7 @@ import Toasts, { useToasts } from "./components/Toasts.jsx";
 import AuthPortal from "./components/AuthPortal.jsx";
 import AdminCore from "./components/AdminCore.jsx";
 
-const DEFAULT_URL = (import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:3001" : "")).replace(/\/+$/, "");
+const DEFAULT_URL = normalizeBackendUrl(import.meta.env.VITE_API_URL, import.meta.env.DEV);
 
 function load(key, fallback) {
   try {

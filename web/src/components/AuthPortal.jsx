@@ -19,16 +19,22 @@ export default function AuthPortal({ backend, onSignedIn }) {
     setBusy(true);
     setError("");
     try {
-      if (!backend) throw new Error("Frontend VITE_API_URL is missing. Configure the Railway backend in Vercel.");
+      if (!backend) throw new Error("Invalid or missing VITE_API_URL. Set it to https://snapbot.up.railway.app in Netlify and rebuild.");
       const paths = { login: "login", signup: "signup", recovery: "recover", key: "key-login" };
       const body = mode === "key" ? { apiKey: key.trim() } :
         mode === "recovery" ? { phone, recoveryCode, newPassword: password } : { phone, password };
-      const res = await fetch(backend + "/api/auth/" + paths[mode], {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      let res;
+      try {
+        res = await fetch(backend + "/api/auth/" + paths[mode], {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch {
+        throw new Error("Cannot reach the Railway backend. Check VITE_API_URL and Railway CORS_ORIGIN for this site.");
+      }
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Could not sign in.");
+      if (!res.ok) throw new Error(data.error ||
+        (res.status === 404 ? "Railway API route not found. Check the VITE_API_URL backend address." : "Could not sign in."));
       const credentials = { apiKey: data.apiKey, user: data.user };
       setPassword("");
       setKey("");

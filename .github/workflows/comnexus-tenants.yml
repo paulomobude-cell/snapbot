@@ -24,6 +24,8 @@ jobs:
       - run: node test/live-screen.mjs
       - run: npm ci
         working-directory: web
+      - run: node scripts/backend-url-smoke.mjs
+        working-directory: web
       - run: npm run build
         working-directory: web
       - run: node scripts/pwa-smoke.mjs
