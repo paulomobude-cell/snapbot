@@ -47,6 +47,25 @@ try {
   assert.deepEqual(classified.map(item => item.kind), ["notice", "notice", "notice", "text"]);
   assert.equal(classified.some(item => item.kind === "media"), false,
     "saved-media notice must not pretend its bytes are available");
+    const realLabels = [
+    el("span", "YOU ARE USING SNAPCHAT FOR WEB"),
+    el("span", "YOU TOOK A SCREENSHOT OF CHAT!"),
+    el("span", "YOU SCREEN RECORDED CHAT!"),
+    el("span", "YOU SAVED A VIDEO FROM Osaebobo"),
+    el("span", "This video is no longer available"),
+    el("span", "1 year ago"),
+    el("span", "Click to view"),
+    el("span", "Okay my love"),
+  ];
+  globalThis.document = { getElementById: id => id === "cv-friend" ? ({
+    textContent: realLabels.map(item => item.textContent).join(" "),
+    querySelectorAll: selector => selector === "*" ? realLabels : [],
+  }) : null };
+  const reality = extractVisibleMessages("friend", "Friend");
+  assert.deepEqual(reality.map(item => item.kind), ["notice","notice","notice","notice","notice","snap","text"]);
+  assert.ok(reality.filter(item=>item.kind==="notice").every(item=>item.isMe===false && item.from==="Snapchat"),
+    "system labels must never be presented as outgoing messages");
+  assert.equal(reality.at(-1).text,"Okay my love");
     globalThis.document = { getElementById: () => ({
     textContent: "unknown layout", querySelectorAll: () => [],
   }) };
