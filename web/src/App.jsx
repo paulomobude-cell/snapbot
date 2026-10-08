@@ -215,8 +215,6 @@ function Dashboard({ settings, onDisconnect }) {
         onSend={(text) => call("message:send", { accountId, chatId, text })}
         onCopy={(text) => navigator.clipboard?.writeText(text).then(() => toast("Copied", "success"))}
         onOpenScreen={() => setPanel("screen")}
-        onPreserve={() => run("pair:request", { accountId, chatId }, "Preservation requested")}
-        onRevoke={() => run("pair:revoke", { accountId, chatId }, "Preservation turned off")}
         toast={toast}
       />
 
