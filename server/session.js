@@ -104,7 +104,9 @@ export default class Session extends EventEmitter {
       });
       if (this.viewers > 0) await this.startScreencast();
 
-      if ((await this.waitForPage(30000)) === "chats") {
+      const pageState = await this.waitForPage(30000);
+      if (this.status !== "starting") return; // another login or stop began
+      if (pageState === "chats") {
         await this.onLoggedIn();
       } else if (this.credentials) {
         await this.login(this.credentials.username, this.credentials.password);
@@ -119,23 +121,36 @@ export default class Session extends EventEmitter {
   }
 
   async login(username, password) {
-    if (!this.bot?.page) throw new Error("Session not started");
+    if (!this.bot?.page) throw new Error("Browser is not ready yet");
+    // Avoid overlapping submits from an account auto-login and dashboard retries.
+    if (this.status === "logging_in" || this.status === "connected") return;
+    this.stopLoop();
     this.setStatus("logging_in");
-    await this.run(async () => {
-      // get back to the login form if the page is somewhere else (error page, logged out)
-      const onForm = await this.bot.page
-        .$(LOGIN_FORM)
-        .catch(() => null);
-      if (!onForm && this.bot.page.goto) {
-        await this.bot.page.goto(LOGIN_URL, { waitUntil: "networkidle2" }).catch(() => {});
+
+    try {
+      await this.run(async () => {
+        // Navigate only if we are not already at a valid login step.
+        const onForm = await this.bot.page.$(LOGIN_FORM).catch(() => null);
+        const onPassword = await this.bot.page.$('input[type="password"]').catch(() => null);
+        if (!onForm && !onPassword && !(await this.hasChatList()) && this.bot.page.goto) {
+          await this.bot.page.goto(LOGIN_URL, {
+            waitUntil: "domcontentloaded",
+            timeout: 15000,
+          }).catch((error) => console.warn("Snapchat login page navigation:", error.message));
+        }
+        await this.bot.login({ username, password });
+      });
+      if (this.status === "stopped") return;
+      if (await this.waitForChatList(15000)) {
+        await this.onLoggedIn();
+      } else {
+        this.setStatus("needs_login", "Snapchat did not open the chat list. Check the live screen for CAPTCHA, two-factor verification, or a login error.");
+        this.watchForManualLogin();
       }
-      await this.bot.login({ username, password });
-    });
-    if (await this.waitForChatList(15000)) {
-      await this.onLoggedIn();
-    } else {
-      // captcha / 2FA: user finishes it through the live screen
-      this.setStatus("needs_login");
+    } catch (error) {
+      if (this.status === "stopped") return;
+      console.warn("Automatic Snapchat login requires attention:", error.message);
+      this.setStatus("needs_login", error.message);
       this.watchForManualLogin();
     }
   }
