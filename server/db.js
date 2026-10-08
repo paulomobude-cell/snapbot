@@ -89,6 +89,12 @@ export function openDb(dataDir) {
       role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user','admin')),
       created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      key_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS user_sessions_user ON user_sessions(user_id, created_at);
     CREATE TABLE IF NOT EXISTS auth_attempts (
       scope TEXT PRIMARY KEY,
       count INTEGER NOT NULL,
