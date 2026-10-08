@@ -34,6 +34,7 @@ export default class Session extends EventEmitter {
     this.loopTimer = null;
     this.lastFullSync = 0;
     this.lastChatDiscovery = 0;
+    this.pendingSync = new Set();
     this.lastStatus = new Map(); // chatId -> status string, to spot new activity
     this.screencast = null;
     this.viewers = 0;
@@ -263,20 +264,36 @@ export default class Session extends EventEmitter {
     if (fullSync) this.lastFullSync = now;
 
     const held = new Set(this.store.chatIds());
-    const toSync = new Set();
-    if (this.activeChatId) toSync.add(this.activeChatId);
+    // Schedule newly active chats ahead of background work. An initial
+    // discovery of hundreds of contacts must not block incoming updates for
+    // minutes while Chromium opens every thread in one giant tick.
+    const urgent = [];
     for (const chat of chats) {
       const statusKey = JSON.stringify(chat.status);
-      const changed = this.lastStatus.get(chat.id) !== statusKey;
+      const previous = this.lastStatus.get(chat.id);
       this.lastStatus.set(chat.id, statusKey);
-      // sync on new activity; on a full sync re-check every chat we hold messages
-      // for, so deletions and Snapchat's own expiry are picked up
-      if (changed || (fullSync && held.has(chat.id))) {
-        toSync.add(chat.id);
-      }
+      const changed = previous !== statusKey;
+      if (changed && previous !== undefined) urgent.push(chat.id);
+      else if (changed || (fullSync && held.has(chat.id))) this.pendingSync.add(chat.id);
     }
-    for (const chatId of toSync) {
+    for (const id of urgent.reverse()) {
+      this.pendingSync.delete(id);
+      this.pendingSync = new Set([id, ...this.pendingSync]);
+    }
+    // Process a bounded batch per tick. Keeping the queue across ticks avoids
+    // losing unread or historical chats when the virtualized list moves.
+    let processed = 0;
+    const limit = 3;
+    if (this.activeChatId) {
+      this.pendingSync.delete(this.activeChatId);
+      await this.syncChat(this.activeChatId);
+      processed++;
+    }
+    while (this.pendingSync.size && processed < limit) {
+      const chatId = this.pendingSync.values().next().value;
+      this.pendingSync.delete(chatId);
       await this.syncChat(chatId);
+      processed++;
     }
     // leave the selected chat open so its messages keep rendering
     if (this.activeChatId) {
@@ -410,6 +427,9 @@ export default class Session extends EventEmitter {
       console.error("Logout failed", error.message);
     }
     this.store.resetSync(); // the archive stays
+    this.pendingSync.clear();
+    this.lastStatus.clear();
+    this.lastChatDiscovery = 0;
     this.chats = [];
     this.emit("chats", []);
     this.setStatus("needs_login");
