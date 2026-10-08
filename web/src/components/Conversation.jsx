@@ -3,8 +3,9 @@ import { Avatar, Icon } from "../util.jsx";
 import { Empty } from "./ChatList.jsx";
 import { group } from "../message-groups.js";
 
-export default function Conversation({ chat, status, messages, now, onBack, onSend, onCopy, onOpenScreen, toast }) {
-  const [pending, setPending] = useState([]); // optimistic sends
+export default function Conversation({ chat, status, messages, now, onBack, onSend, onCopy, onOpenScreen, onInteractiveSync, toast }) {
+  const [pending, setPending] = useState([]);
+  const [syncing, setSyncing] = useState(false); // optimistic sends
   const listRef = useRef(null);
   const [atBottom, setAtBottom] = useState(true);
   const [missed, setMissed] = useState(0);
@@ -40,6 +41,7 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
     }
   };
 
+  const actualMessages = messages.filter(message => message.kind !== "status" && message.kind !== "notice");
   const groups = group(messages);
   const offline = status !== "connected";
   const preserved = true;
@@ -52,12 +54,24 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
         <div className="convo-title">
           <strong>{chat.name} {chat.status?.streak && <span className="streak">{chat.status.streak}</span>}</strong>
           <span className="muted small">
-            {messages.length} message{messages.length === 1 ? "" : "s"} · archived
+            {actualMessages.length} message{actualMessages.length === 1 ? "" : "s"} · archived
           </span>
         </div>
       </header>
 
 
+      <div className="passive-controls">
+        <span className="muted small">Passive mode · selecting a chat doesn't open it in Snapchat.</span>
+        <button className="btn small" disabled={syncing || offline} onClick={async () => {
+          if (!window.confirm("Open this conversation in Snapchat to sync? Snapchat may mark messages as read. Continue?")) return;
+          setSyncing(true);
+          try {
+            const result = await onInteractiveSync();
+            if (!result?.captured) toast(result?.reason || "Conversation was not available", "error");
+          } catch (error) { toast(error.message, "error"); }
+          finally { setSyncing(false); }
+        }}>{syncing ? "Syncing…" : "Open & sync (may mark read)"}</button>
+      </div>
       <div
         className="messages"
         ref={listRef}
@@ -74,10 +88,12 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
         {groups.map((g) => (
           <div key={g.key}>
             {g.time && <div className="day-sep"><span>{g.time}</span></div>}
-            <div className={`group ${g.isMe ? "me" : "them"}`}>
-              {!g.isMe && <div className="group-from">{g.from}</div>}
+            <div className={`group ${g.isStatus ? "statuses" : g.isMe ? "me" : "them"}`}>
+              {!g.isMe && g.messages.some(m => m.kind !== "status") && <div className="group-from">{g.from}</div>}
               {g.messages.map((m) => (
-                <Bubble key={m.uid} m={m} onCopy={onCopy} />
+                m.kind === "status" || m.kind === "notice"
+                  ? <div className="chat-status-event" key={m.uid}>{m.text}</div>
+                  : <Bubble key={m.uid} m={m} onCopy={onCopy} />
               ))}
             </div>
           </div>

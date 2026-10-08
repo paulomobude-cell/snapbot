@@ -33,7 +33,21 @@ try {
   assert.deepEqual(items.filter(x => x.kind === "text").map(x => x.text), ["hello there","I can see these"]);
   assert.equal(items.at(-1).src, "blob:photo");
   assert.ok(items.every(x => x.from === "Friend"));
-  globalThis.document = { getElementById: () => ({
+  const statusItems = [
+    el("span", "You saved a video"),
+    el("span", "You took a screenshot of the chat"),
+    el("span", "Alex saved a photo to chat"),
+    el("span", "Photo from vacation"),
+  ];
+  globalThis.document = { getElementById: id => id === "cv-friend" ? ({
+    textContent: statusItems.map(item => item.textContent).join(" "),
+    querySelectorAll: selector => selector === "*" ? statusItems : [],
+  }) : null };
+  const classified = extractVisibleMessages("friend", "Friend");
+  assert.deepEqual(classified.map(item => item.kind), ["notice", "notice", "notice", "text"]);
+  assert.equal(classified.some(item => item.kind === "media"), false,
+    "saved-media notice must not pretend its bytes are available");
+    globalThis.document = { getElementById: () => ({
     textContent: "unknown layout", querySelectorAll: () => [],
   }) };
   assert.equal(extractVisibleMessages("friend", "Friend"), null, "selector failure must not become empty archive");

@@ -11,6 +11,11 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
   const ME = "rgb(242, 60, 87)";
   const deletedRe = new RegExp(deletedPattern || "\\bdeleted (a|an|the)? ?(chat|snap|message|photo|image|video|voice|audio|sticker|attachment)", "i");
   const snapRe = new RegExp(snapPattern || "\\b(tap to view|tap to replay|tap to load|new snap|received snap)\\b", "i");
+  // Snapchat renders service activity inline with actual messages. An event
+  // saying "saved a video" does not provide the underlying video file.
+  const statusRe = /^(?:(?:you|[\p{L}][\p{L} .'-]{0,65})\s+)?(?:saved|unsaved|deleted|opened|replayed|screenshotted|recorded|received|sent|viewed|reacted to|removed|pinned|unpinned)\s+(?:(?:a|an|the|your|their)\s+)?(?:chat|message|snap|photo|video|image|sticker|attachment|audio|voice(?: note)?)(?:\s+(?:in|from|to)\s+chat)?[.!]?$/iu;
+  const screenshotRe = /^(?:(?:you|[\p{L}][\p{L} .'-]{0,65})\s+)?(?:took a screenshot(?: of (?:the|a|your) (?:chat|snap|photo|video))?|screen recorded(?: the chat)?)\s*[.!]?$/iu;
+  const savedRe = /^(?:saved (?:a )?(?:photo|video|snap|image|media)|tap to save|media saved in chat|snap saved in chat)$/i;
   const output = [];
   let currentTime = "";
   let snapIndex = 0;
@@ -37,6 +42,8 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
     if (deletedRe.test(value) && value.length < 120) {
       const who = value.split(/\s+deleted\b/i)[0].trim();
       output.push({ kind: "notice", notice: "deleted", ...base, from: who || from, text: value });
+    } else if ((statusRe.test(value) || screenshotRe.test(value) || savedRe.test(value)) && value.length < 200) {
+      output.push({ kind: "notice", notice: /saved|unsaved/i.test(value) ? "saved" : "status", ...base, text: value });
     } else if (snapRe.test(value) && value.length < 160) {
       output.push({ kind: "snap", ...base, text: "", snapIndex: snapIndex++ });
     } else {
@@ -111,7 +118,8 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
     // represent a message. Avoid collecting the same text from its ancestors.
     if ([...el.children].some(child => child.textContent?.trim())) continue;
     const value = (el.textContent || "").replace(/\s+/g, " ").trim();
-    if (!value || dateOnly.test(value) || value.length > 6000) continue;
+    if (!value || value.length > 6000) continue;
+    if (dateOnly.test(value) && !/^(?:received|opened|saved in chat)$/i.test(value)) continue;
     if (el.matches?.("[class*='time' i], [class*='status' i], [class*='timestamp' i]")) continue;
     // Repeated identical text elements under the same bubble are duplicate
     // markup, not separate messages. Identical texts in separate bubbles stay.

@@ -125,6 +125,11 @@ export function openDb(dataDir) {
   if (!existingColumns.includes("owner_user_id")) {
     db.exec("ALTER TABLE accounts ADD COLUMN owner_user_id TEXT REFERENCES app_users(id)");
   }
+  // Preserve historic media rows while adding an auditable retry state. Earlier
+  // misconfigured R2 buckets may have left media marked permanently failed.
+  const mediaColumns = db.prepare("PRAGMA table_info(media)").all().map(row => row.name);
+  if (!mediaColumns.includes("retry_at")) db.exec("ALTER TABLE media ADD COLUMN retry_at INTEGER");
+  if (!mediaColumns.includes("last_error")) db.exec("ALTER TABLE media ADD COLUMN last_error TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS accounts_owner_idx ON accounts(owner_user_id)");
   db.exec("PRAGMA user_version = 5");
   return db;

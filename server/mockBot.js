@@ -85,6 +85,8 @@ export default class MockBot {
     return !!this.lastOpened;
   }
 
+  async visibleChatId() { return this.lastOpenedId || null; }
+
   async readMessages(chatId) {
     const chat = this.chats[chatId];
     if (!chat) return null;

@@ -37,7 +37,7 @@ const config = {
   // like an ordinary client. (Not used to hide reads.)
   blockedRequests: list(env.BLOCKED_REQUESTS),
   // capture media accessible to the signed-in account
-  captureSnaps: env.CAPTURE_SNAPS !== "false",
+  captureSnaps: false, // strict passive default: never auto-open received Snaps
   snapsPerSync: Number(env.SNAPS_PER_SYNC || 3),
   mediaUrlTtl: Number(env.MEDIA_URL_TTL_SECONDS || 6 * 3600),
   publicUrl: (env.PUBLIC_URL || (env.RAILWAY_PUBLIC_DOMAIN ? `https://${env.RAILWAY_PUBLIC_DOMAIN}` : "")).replace(/\/+$/, ""),
@@ -301,6 +301,11 @@ io.on("connection", (socket) => {
       messages: await (entry(p), accounts.messages(p.accountId, p.chatId)),
     });
     await entry(p).session.selectChat(p.chatId);
+  }));
+  socket.on("chat:sync", ack(async (p) => {
+    const { session } = entry(p);
+    if (p.confirmReadRisk !== true) throw new Error("Explicit read-receipt risk confirmation required");
+    return session.syncChat(String(p.chatId), { interactive: true });
   }));
   socket.on("message:send", ack((p) => {
     entry(p);
