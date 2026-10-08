@@ -14,6 +14,7 @@ const hash = (...parts) =>
   crypto.createHash("sha1").update(parts.join("\u0000")).digest("hex").slice(0, 16);
 
 function identity(item) {
+  if (item.kind === "notice" || item.kind === "status") return `e\u0000${item.from}\u0000${item.text}`;
   if (item.kind === "media") return `m\u0000${item.from}\u0000${item.sha256 || "unread"}\u0000${item.text}`;
   if (item.kind === "snap") return `s\u0000${item.from}`;
   return `t\u0000${item.from}\u0000${item.text}`;
@@ -49,6 +50,9 @@ function toMedia(row) {
     kind: row.kind,
     viewOnce: !!row.view_once,
     status: row.status,
+    retryAt: row.retry_at,
+    lastError: row.last_error,
+    attempts: row.attempts,
     contentType: row.content_type,
     size: row.size,
     storageKey: row.storage_key,
@@ -80,10 +84,10 @@ export default class MessageStore extends EventEmitter {
       chatIds: q(`SELECT DISTINCT chat_id FROM messages WHERE account_id = ?`),
       previews: q(`
         SELECT m.* FROM messages m
-        JOIN (SELECT chat_id, MAX(ord) AS ord FROM messages WHERE account_id = ? GROUP BY chat_id) last
+        JOIN (SELECT chat_id, MAX(ord) AS ord FROM messages WHERE account_id = ? AND kind != 'status' GROUP BY chat_id) last
           ON m.chat_id = last.chat_id AND m.ord = last.ord
-        WHERE m.account_id = ?`),
-      counts: q(`SELECT chat_id, COUNT(*) AS n, SUM(state = 'deleted') AS deleted
+        WHERE m.account_id = ? AND m.kind != 'status'`),
+      counts: q(`SELECT chat_id, SUM(kind != 'status') AS n, SUM(state = 'deleted' AND kind != 'status') AS deleted
                  FROM messages WHERE account_id = ? GROUP BY chat_id`),
       insert: q(`INSERT INTO messages
         (account_id, id, uid, chat_id, kind, from_name, is_me, text, time, ord, state, first_seen_at)
@@ -114,9 +118,9 @@ export default class MessageStore extends EventEmitter {
       addMedia: q(`INSERT INTO media (id, account_id, message_uid, kind, view_once, status, created_at)
                    VALUES (?, ?, ?, ?, ?, 'pending', ?)`),
       mediaStored: q(`UPDATE media SET status = 'stored', storage_key = ?, content_type = ?, size = ?,
-                      sha256 = ?, kind = ? WHERE id = ?`),
-      mediaFailed: q(`UPDATE media SET attempts = attempts + 1,
-                      status = CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE 'pending' END WHERE id = ?`),
+                      sha256 = ?, kind = ?, retry_at = NULL, last_error = NULL WHERE id = ?`),
+      mediaFailed: q(`UPDATE media SET attempts = attempts + 1, status = 'failed',
+                      retry_at = ?, last_error = ? WHERE id = ?`),
       mediaKeysFor: q(`SELECT storage_key FROM media WHERE message_uid = ? AND storage_key IS NOT NULL`),
       removeMedia: q(`DELETE FROM media WHERE message_uid = ?`),
       keyInUse: q(`SELECT COUNT(*) AS n FROM media WHERE storage_key = ?`),
@@ -182,7 +186,7 @@ export default class MessageStore extends EventEmitter {
 
   // Reconcile visible chat messages with the local archive.
   // Messages removed from Snapchat remain available as deleted/gone.
-  sync(chatId, items, { preserve = true } = {}) {
+  sync(chatId, items, { preserve = true, reconcileMissing = false } = {}) {
     const now = Date.now();
     const live = new Map(this.sql.live.all(this.accountId, chatId).map((r) => [r.id, r]));
     const tombstones = new Set(this.sql.tombstones.all(this.accountId, chatId).map((r) => r.id));
@@ -196,7 +200,9 @@ export default class MessageStore extends EventEmitter {
         const n = counts.get(`n\u0000${key}`) || 0;
         counts.set(`n\u0000${key}`, n + 1);
         notices.push({ ...item, index, key: `${key}#${n}` });
-        return;
+        // Keep real status/activity entries in timeline, separate from chat
+        // bubbles and excluded from conversation message counts.
+        item = { ...item, kind: "status" };
       }
       const key = identity(item);
       const occurrence = counts.get(key) || 0;
@@ -249,7 +255,7 @@ export default class MessageStore extends EventEmitter {
 
       // forget TTL tombstones once Snapchat stops showing the message too
       for (const id of tombstones) {
-        if (!seen.has(id)) this.sql.removeTombstone.run(this.accountId, id);
+        if (reconcileMissing && !seen.has(id)) this.sql.removeTombstone.run(this.accountId, id);
       }
 
       // messages that left Snapchat: deleted by the sender, or cleared by Snapchat
@@ -258,7 +264,7 @@ export default class MessageStore extends EventEmitter {
       const indexOf = new Map(entries.map((e) => [e.id, e.index]));
       const sortedLive = [...live.values()].sort((a, b) => a.ord - b.ord);
       for (const row of sortedLive) {
-        if (seen.has(row.id)) continue;
+        if (!reconcileMissing || row.kind === "status" || seen.has(row.id)) continue;
         const misses = (this.missing.get(row.id) || 0) + 1;
         if (misses < MISSING_THRESHOLD) {
           this.missing.set(row.id, misses);
@@ -323,8 +329,11 @@ export default class MessageStore extends EventEmitter {
     this.sql.mediaStored.run(key, contentType, size, sha256, kind, id);
   }
 
-  mediaFailed(id, maxAttempts) {
-    this.sql.mediaFailed.run(maxAttempts, id);
+  mediaFailed(id, reason = "Media unavailable") {
+    const row = this.sql.mediaById.get(id, this.accountId);
+    const attempts = (row?.attempts || 0) + 1;
+    const nextAt = Date.now() + Math.min(30 * 60_000, 20_000 * (2 ** Math.min(attempts - 1, 6)));
+    this.sql.mediaFailed.run(nextAt, String(reason).slice(0, 180), id);
   }
 
   getMedia(id) {
