@@ -20,7 +20,11 @@ export default function LiveScreen({ account, status, statusError, socket, call,
   const viewportRef = useRef(null);
 
   useEffect(() => {
-    const update = () => setNativeFullscreen(document.fullscreenElement === fullscreenRef.current);
+    const update = () => {
+      const active = document.fullscreenElement === fullscreenRef.current;
+      setNativeFullscreen(active);
+      if (!document.fullscreenElement) setExpanded(false);
+    };
     document.addEventListener("fullscreenchange", update);
     return () => document.removeEventListener("fullscreenchange", update);
   }, []);
