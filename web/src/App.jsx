@@ -224,7 +224,7 @@ function Dashboard({ settings, onDisconnect }) {
             <LiveScreen
               key={accountId}
               account={account}
-              status={status}
+              status={status} statusError={state.status[accountId]?.error || account?.error || null}
               call={call}
               socket={socket}
               onClose={() => setPanel(null)}
