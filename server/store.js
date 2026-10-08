@@ -125,6 +125,8 @@ export default class MessageStore extends EventEmitter {
       removeMedia: q(`DELETE FROM media WHERE message_uid = ?`),
       keyInUse: q(`SELECT COUNT(*) AS n FROM media WHERE storage_key = ?`),
       allKeys: q(`SELECT storage_key FROM media WHERE account_id = ? AND storage_key IS NOT NULL`),
+      chatOrder: q(`SELECT id FROM messages WHERE account_id = ? AND chat_id = ?`),
+      updateOrd: q(`UPDATE messages SET ord = ? WHERE account_id = ? AND chat_id = ? AND id = ?`),
       clearMessages: q(`DELETE FROM messages WHERE account_id = ?`),
       clearMedia: q(`DELETE FROM media WHERE account_id = ?`),
       clearTombstones: q(`DELETE FROM tombstones WHERE account_id = ?`),
@@ -310,6 +312,26 @@ export default class MessageStore extends EventEmitter {
     }
     this.emit("chat:snapshot", { chatId, messages: this.getMessages(chatId) });
     return { seen, added, preserve };
+  }
+
+  // Only reorder if the combined DOM scan contains EVERY stored row for the
+  // chat. If there are archived/deleted rows outside the scan, leave existing
+  // chronology untouched rather than guessing where those events belong.
+  reorderObserved(chatId, observedIds) {
+    const all = this.sql.chatOrder.all(this.accountId, chatId);
+    if (!all.length) return false;
+    const order = [...new Set(observedIds)];
+    const seen = new Set(order);
+    if (all.some(row => !seen.has(row.id))) return false;
+    const inDb = new Set(all.map(row => row.id));
+    this.tx(() => {
+      let ordinal = 0;
+      for (const id of order) {
+        if (inDb.has(id)) this.sql.updateOrd.run(++ordinal, this.accountId, chatId, id);
+      }
+    });
+    this.emit("chat:snapshot", { chatId, messages: this.getMessages(chatId) });
+    return true;
   }
 
   // ---- media ----
