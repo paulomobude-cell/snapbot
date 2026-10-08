@@ -504,3 +504,74 @@ video.media { cursor: default; }
  .admin-stats { grid-template-columns: repeat(2,minmax(0,1fr)); }
  .admin-stat strong { font-size: 18px; }
 }
+
+/* Browser-first mirror: native fullscreen contains only the remote screenshot
+   and one unobtrusive handle. All other controls live in a dismissible drawer. */
+.mirror-root { position: relative; min-height: 0; min-width: 0; overflow: hidden; }
+.mirror-header { flex: 0 0 auto; }
+.mirror-viewport {
+  position: relative; flex: 1 1 auto; min-height: 0; min-width: 0;
+  overflow: auto; background: #111; overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.mirror-canvas {
+  position: relative; min-width: 100%; min-height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  outline: none; background: #111;
+}
+.mirror-canvas img {
+  width: 100%; height: 100%; object-fit: contain; display: block;
+  user-select: none; -webkit-user-drag: none; cursor: crosshair;
+}
+.mirror-canvas:focus-visible { outline: 2px solid var(--them); outline-offset: -2px; }
+.mirror-wait { display: flex; align-items: center; justify-content: center; gap: 8px; color: #fff; min-height: 150px; }
+.mirror-fullscreen, .mirror-root:fullscreen {
+  position: fixed; inset: 0; z-index: 110; width: 100vw; height: 100dvh;
+  display: flex; flex-direction: column; padding: 0; margin: 0;
+  border: 0; border-radius: 0; background: #0b0b0f; overflow: hidden;
+}
+.mirror-fullscreen .mirror-header, .mirror-root:fullscreen .mirror-header { display: none; }
+.mirror-fullscreen .mirror-viewport, .mirror-root:fullscreen .mirror-viewport {
+  width: 100%; height: 100%; max-height: none; min-height: 0;
+  margin: 0; padding: 0; border: 0; border-radius: 0;
+}
+.mirror-handle {
+  position: absolute; z-index: 6; bottom: max(12px, env(safe-area-inset-bottom, 0px));
+  left: 50%; transform: translateX(-50%); width: 52px; height: 34px;
+  display: grid; place-items: center; border-radius: 999px;
+  background: rgba(20,20,25,.72); color: white; border: 1px solid rgba(255,255,255,.24);
+  box-shadow: 0 5px 22px #0006; backdrop-filter: blur(12px);
+}
+.mirror-handle span { font-size: 29px; line-height: 1; transform: translateY(5px); }
+.mirror-dismiss { position: absolute; z-index: 7; inset: 0; border: 0; border-radius: 0;
+  background: rgba(0,0,0,.12); width: 100%; }
+.mirror-drawer {
+  position: absolute; z-index: 8; bottom: 0; left: 0; right: 0;
+  background: var(--panel); color: var(--text); border-radius: 18px 18px 0 0;
+  border: 1px solid var(--border); box-shadow: 0 -14px 40px #0008;
+  max-height: min(75dvh, 680px); overflow: hidden;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.mirror-drawer-grip { display: flex; justify-content: center; }
+.mirror-drawer-grip button { width: 64px; height: 36px; border: 0; background: transparent; color: var(--muted); }
+.mirror-drawer-grip span { font-size: 30px; line-height: 1; }
+.mirror-drawer-scroll { overflow-y: auto; max-height: calc(min(75dvh, 680px) - 36px);
+  padding: 0 16px 16px; display: flex; flex-direction: column; gap: 12px; }
+.mirror-entry { display: flex; flex-direction: column; gap: 8px; }
+.mirror-entry > label:first-child { font-weight: 600; }
+.mirror-entry .row input { flex: 1 1 auto; min-width: 0; }
+.mirror-entry .check { display: flex; align-items: center; gap: 8px; }
+.mirror-entry .check input { width: auto; }
+.mirror-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.mirror-tabs { display: flex; overflow-x: auto; flex-wrap: nowrap; gap: 6px; }
+.mirror-tabs .btn { flex-shrink: 0; max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
+.mirror-status p { color: var(--danger); overflow-wrap: anywhere; }
+.mirror-automatic summary, .mirror-status summary { cursor: pointer; }
+.mirror-automatic form { margin-top: 10px; }
+.mirror-footnote { margin: 0; padding-bottom: 4px; }
+@media(max-width: 760px) {
+  .mirror-root:not(.mirror-fullscreen) .mirror-viewport { min-height: 35vh; }
+  .mirror-fullscreen .mirror-viewport { min-height: 0; }
+  .mirror-drawer { max-height: 82dvh; }
+  .mirror-drawer-scroll { max-height: calc(82dvh - 36px); }
+}
