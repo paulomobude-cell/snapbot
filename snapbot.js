@@ -66,7 +66,8 @@ export default class SnapBot {
           if (text.includes("Snapchat")) {
             console.log("Snapchat for Web Build info:", text);
             const version = text.match(/v\d+\.\d+\.\d+/);
-            const currentVersion = version[0];
+            const currentVersion = version?.[0];
+            if (!currentVersion) return;
             console.log("Version", currentVersion);
             //check version
             if (currentVersion != lastTestedVersion) {
@@ -88,64 +89,67 @@ export default class SnapBot {
       await this.page.goto("https://www.snapchat.com/?original_referrer=none");
     } catch (error) {
       console.error(`Error while Starting Snapchat : ${error}`);
+      throw error;
     }
   }
 
   async login(credentials) {
-    const { username, password } = credentials;
-    if (username == "" || password == "") {
-      throw new Error("Credentials cannot be empty");
+    const { username, password } = credentials || {};
+    if (!username?.trim() || !password) {
+      throw new Error("Snapchat username and password are required");
     }
-    try {
-      // Enter username
-      const defaultLoginBtn = await this.page.$("#ai_input");
-      const loginBtn = await this.page.$('input[name="accountIdentifier"]');
+    if (!this.page || this.page.isClosed?.()) {
+      throw new Error("Snapchat browser is not ready. Restart the session and try again.");
+    }
 
-      if (loginBtn) {
-        this.page.waitForNetworkIdle();
-        console.log("Entering username...");
-        await this.page.type('input[name="accountIdentifier"]', username, {
-          delay: 100,
-        });
+    const page = this.page;
+    const USERNAME = 'input[name="accountIdentifier"], #ai_input';
+    const PASSWORD = '#password, input[type="password"]';
+    const SUBMIT = 'button[type="submit"]';
+
+    // Snapchat sometimes opens a verification page instead of a login form.
+    // Never submit a form or pretend login succeeded when fields are missing.
+    let userInput = await page.$(USERNAME).catch(() => null);
+    let passwordInput = await page.$(PASSWORD).catch(() => null);
+    if (!userInput && !passwordInput) {
+      userInput = await page.waitForSelector(USERNAME, {
+        visible: true, timeout: 8000,
+      }).catch(() => null);
+      passwordInput = await page.$(PASSWORD).catch(() => null);
+    }
+    if (!userInput && !passwordInput) {
+      throw new Error("Snapchat login form is unavailable. Check the live screen for verification or a page error.");
+    }
+
+    const submitStep = async () => {
+      const button = await page.$(SUBMIT).catch(() => null);
+      if (button) await button.click();
+      else await page.keyboard.press("Enter");
+    };
+
+    if (userInput) {
+      await userInput.click({ clickCount: 3 });
+      await userInput.type(username.trim(), { delay: 45 });
+      // A username/password form submits once; two-step forms submit to advance.
+      if (!passwordInput) {
+        await submitStep();
+        try {
+          passwordInput = await page.waitForSelector(PASSWORD, {
+            visible: true, timeout: 12000,
+          });
+        } catch {
+          throw new Error("Snapchat did not show a password field. Complete the next step on the live screen (CAPTCHA, 2FA, or login error).");
+        }
       }
-      if (defaultLoginBtn) {
-        console.log("Entering username...");
-        await this.page.type("#ai_input", username, { delay: 100 });
-      }
-
-      await this.page.click("button[type='submit']");
-    } catch (e) {
-      console.log("Username field error:", e);
-    }
-    try {
-      //Enter Password
-      console.log("Waiting for password field...");
-      await this.page.waitForSelector("#password", {
-        visible: true,
-        timeout: 60000,
-      });
-      await this.page.type("#password", password, { delay: 100 });
-      console.log("Password field filled.");
-    } catch (e) {
-      console.log("Password field loading error:", e);
     }
 
-    await this.page.click("button[type='submit']");
-    await delay(10000);
-    //click not now
-    try {
-      const notNowBtn = "button.NRgbw.eKaL7.Bnaur"; 
-      console.log("Checking for 'Not now' button...");
-      await this.page.waitForSelector(notNowBtn, {
-        visible: true,
-        timeout: 5000,
-      });
-      await this.page.click(notNowBtn);
-      console.log("Clicked 'Not now' button.");
-    } catch (e) {
-      console.log("Popup handling error or popup not found:", e);
+    passwordInput ||= await page.$(PASSWORD);
+    if (!passwordInput) {
+      throw new Error("Snapchat password field is unavailable. Use the live screen to continue.");
     }
-    await delay(1000);
+    await passwordInput.type(password, { delay: 45 });
+    await submitStep();
+    // The session manager checks for the chat list and handles verification.
   }
 
   async isLogged() {
