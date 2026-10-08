@@ -498,12 +498,7 @@ export default class Session extends EventEmitter {
 
   async addViewer() {
     this.viewers++;
-    if (this.viewers === 1) {
-      // Polling screenshots also tracks browser popups; CDP screencast only
-      // follows the initial tab and can freeze on pages that don't repaint.
-      this.screenTimer = setInterval(() => void this.pushScreenFrame(), 1200);
-    }
-    await this.pushScreenFrame();
+    await this.startScreencast();
   }
 
   async removeViewer() {
@@ -512,7 +507,11 @@ export default class Session extends EventEmitter {
   }
 
   async startScreencast() {
-    // Kept for callers created before this change; screenshots are tab-aware.
+    // Restart the capture loop after the browser restarts while a viewer is open.
+    if (!this.viewers) return;
+    if (!this.screenTimer) {
+      this.screenTimer = setInterval(() => void this.pushScreenFrame(), 1200);
+    }
     await this.pushScreenFrame();
   }
 
