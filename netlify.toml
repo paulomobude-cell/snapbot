@@ -1,0 +1,52 @@
+# Netlify configuration for the Vite frontend.
+# Keep Railway as the separate Snapchat/SQLite/Chromium backend.
+# Config lives at repository root so Netlify Git import needs no manual
+# base-directory override. All paths under [build] resolve from web/.
+[build]
+  base = "web"
+  command = "npm ci && npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# Preserve client-side routing without shadowing real files such as /sw.js,
+# /manifest.webmanifest, /assets/* and /icons/*.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Never cache the service worker itself; installed clients must discover updates.
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+    Service-Worker-Allowed = "/"
+    X-Content-Type-Options = "nosniff"
+
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Cache-Control = "public, max-age=3600"
+    Content-Type = "application/manifest+json"
+
+[[headers]]
+  for = "/offline.html"
+  [headers.values]
+    Cache-Control = "public, max-age=3600"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, max-age=0, must-revalidate"
+
+# Vite emits content-hashed assets; those alone can be cached for a long time.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# No private API, token, Socket.IO or message response is proxied/cached here.
+# Set the public build variable VITE_API_URL in the Netlify site environment.
+# Never put API_TOKEN, SECRET_KEY, or ADMIN_API_TOKEN in the frontend environment.
