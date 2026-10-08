@@ -39,6 +39,7 @@ try {
   check("wrong password refused", true);
   const second = auth.login(alice.user.phone, "correct-horse-battery");
   check("second-device sign-in doesn't revoke original device", auth.resolve(alice.apiKey)?.id === alice.user.id && auth.resolve(second.apiKey)?.id === alice.user.id);
+  check("one device can log out without revoking another", auth.revoke(second.apiKey) && !auth.resolve(second.apiKey) && !!auth.resolve(alice.apiKey));
   check("admin token is separate from user credentials", auth.checkAdmin("admin-".repeat(7)) && !auth.checkAdmin(alice.apiKey));
   assert.throws(() => auth.recover(alice.user.phone, "0".repeat(48), "new-strong-password"), /Invalid/);
   const recovered = auth.recover(alice.user.phone, alice.recoveryCode, "new-strong-password");
