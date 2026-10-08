@@ -270,13 +270,20 @@ export default class AccountManager extends EventEmitter {
 
   async remove(id) {
     const { session, store } = this.get(id);
-    store.clear(); // purges its media from storage too
-    this.entries.delete(id);
+    // Stop Chromium before enumerating media; otherwise an active sync could
+    // recreate objects after deletion. Never erase DB references until external
+    // media deletion has succeeded, so failures remain retryable.
     await session.stop();
-    session.removeAllListeners();
-    store.removeAllListeners();
+    const keys = [...new Set(store.sql.allKeys.all(id).map(row => row.storage_key).filter(Boolean))];
+    for (let i = 0; i < keys.length; i += 10) {
+      await Promise.all(keys.slice(i, i + 10).map(key => this.media.remove(key)));
+    }
+    store.clear({ purge: false });
     this.sql.remove.run(id); // cascades messages, tombstones, events
     fs.rmSync(this.profileDir(id), { recursive: true, force: true });
+    this.entries.delete(id);
+    session.removeAllListeners();
+    store.removeAllListeners();
     this.emitAccounts();
   }
 
