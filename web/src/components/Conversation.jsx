@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Avatar, Icon } from "../util.jsx";
 import { Empty } from "./ChatList.jsx";
+import { group } from "../message-groups.js";
 
 export default function Conversation({ chat, status, messages, now, onBack, onSend, onCopy, onOpenScreen, toast }) {
   const [pending, setPending] = useState([]); // optimistic sends
@@ -158,3 +159,32 @@ function MediaView({ media }) {
   );
 }
 
+
+function Composer({ onSend }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const send = async event => {
+    event.preventDefault();
+    const value = text.trim();
+    if (!value || busy) return;
+    setBusy(true);
+    try {
+      await onSend(value);
+      setText("");
+    } finally { setBusy(false); }
+  };
+  return (
+    <form className="composer" onSubmit={send}>
+      <textarea aria-label="Message" placeholder="Type a message…"
+        rows={1} value={text} onChange={event => setText(event.target.value)}
+        onKeyDown={event => {
+          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.currentTarget.form?.requestSubmit();
+          }
+        }} />
+      <button className="btn primary send" type="submit" disabled={!text.trim() || busy}
+        aria-label="Send message"><Icon name="send" /></button>
+    </form>
+  );
+}
