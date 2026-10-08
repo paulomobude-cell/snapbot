@@ -83,6 +83,13 @@ export default function App() {
     setSession(s);
   };
   const signOut = () => {
+    const credential = session?.apiKey;
+    // A failed network request must not block local sign-out.
+    if (credential && DEFAULT_URL) {
+      fetch(DEFAULT_URL + "/api/auth/logout", {
+        method: "POST", headers: { Authorization: "Bearer " + credential },
+      }).catch(() => {});
+    }
     save("snapbot:session", null);
     save("snapbot:view", null);
     if (session?.user?.id) save("snapbot:unread:" + session.user.id, null);
