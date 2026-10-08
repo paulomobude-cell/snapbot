@@ -26,7 +26,7 @@ export async function discoverChats({
   try {
     await scrollTo(0);
     await pause(120);
-    let lastTop = -1;
+    let lastTop = -Infinity;
     for (let step = 0; step < maxSteps; step++) {
       await collect();
       const position = await getPosition();
