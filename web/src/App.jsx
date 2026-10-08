@@ -233,6 +233,7 @@ function Dashboard({ settings, user, onDisconnect }) {
         onSend={(text) => call("message:send", { accountId, chatId, text })}
         onCopy={(text) => navigator.clipboard?.writeText(text).then(() => toast("Copied", "success"))}
         onOpenScreen={() => setPanel("screen")}
+        onInteractiveSync={() => call("chat:sync", { accountId, chatId, confirmReadRisk: true })}
         toast={toast}
       />
 
