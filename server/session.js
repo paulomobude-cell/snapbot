@@ -35,6 +35,7 @@ export default class Session extends EventEmitter {
     this.lastFullSync = 0;
     this.lastChatDiscovery = 0;
     this.pendingSync = new Set();
+    this.passiveActivity = new Map(); // chatId -> latest sidebar change
     this.lastStatus = new Map(); // chatId -> status string, to spot new activity
     this.screencast = null;
     this.viewers = 0;
@@ -263,61 +264,50 @@ export default class Session extends EventEmitter {
     const fullSync = now - this.lastFullSync > this.config.fullSyncIntervalMs;
     if (fullSync) this.lastFullSync = now;
 
-    const held = new Set(this.store.chatIds());
-    // Schedule newly active chats ahead of background work. An initial
-    // discovery of hundreds of contacts must not block incoming updates for
-    // minutes while Chromium opens every thread in one giant tick.
-    const urgent = [];
+    // Passive by default: watching sidebar changes does not open conversations.
+    // Opening a chat, including one selected in the dashboard, requires a
+    // separate explicit interactive action. This is not a read-receipt bypass.
     for (const chat of chats) {
       const statusKey = JSON.stringify(chat.status);
       const previous = this.lastStatus.get(chat.id);
       this.lastStatus.set(chat.id, statusKey);
-      const changed = previous !== statusKey;
-      if (changed && previous !== undefined) urgent.push(chat.id);
-      else if (changed || (fullSync && held.has(chat.id))) this.pendingSync.add(chat.id);
+      if (previous !== undefined && statusKey !== previous) {
+        this.passiveActivity.set(chat.id, Date.now());
+        this.emit("chat:activity", {
+          chatId: chat.id, observedAt: Date.now(), status: chat.status,
+        });
+      }
     }
-    for (const id of urgent.reverse()) {
-      this.pendingSync.delete(id);
-      this.pendingSync = new Set([id, ...this.pendingSync]);
-    }
-    // Process a bounded batch per tick. Keeping the queue across ticks avoids
-    // losing unread or historical chats when the virtualized list moves.
-    let processed = 0;
-    const limit = 3;
-    if (this.activeChatId) {
-      this.pendingSync.delete(this.activeChatId);
-      await this.syncChat(this.activeChatId);
-      processed++;
-    }
-    while (this.pendingSync.size && processed < limit) {
-      const chatId = this.pendingSync.values().next().value;
-      this.pendingSync.delete(chatId);
-      await this.syncChat(chatId);
-      processed++;
-    }
-    // leave the selected chat open so its messages keep rendering
-    if (this.activeChatId) {
-      await this.run(() => this.bot.openChat(this.activeChatId));
+    // Only inspect the conversation that is ALREADY visible in the authenticated
+    // browser. page.evaluate does not click it or request another conversation.
+    // The resulting archive can be incomplete if Snapchat has not rendered data.
+    const visibleChat = await this.run(async () => {
+      if (this.bot.visibleChatId) return this.bot.visibleChatId();
+      return null;
+    });
+    if (visibleChat && chats.some(chat => chat.id === visibleChat)) {
+      await this.syncChat(visibleChat, { interactive: false });
     }
   }
 
-  async syncChat(chatId) {
+  async syncChat(chatId, { interactive = false } = {}) {
     const chat = this.chats.find((c) => c.id === chatId);
-    if (!chat) return;
+    if (!chat) return { captured: false, reason: "Chat not discovered" };
     const items = await this.run(async () => {
-      if (!(await this.bot.openChat(chatId))) return null;
-      await delay(800); // let messages render
+      if (interactive) {
+        if (!(await this.bot.openChat(chatId))) return null;
+        await delay(650);
+      } else if (!this.bot.visibleChatId || (await this.bot.visibleChatId()) !== chatId) {
+        return null;
+      }
       return this.bot.readMessages(chatId, chat.name, this.config.patterns);
     });
-    // null means the chat didn't load; don't treat that as "everything left"
-    if (!items) return;
+    if (!items) return { captured: false, reason: "Conversation not rendered" };
 
-    // Archive messages visible to this account without a peer-code handshake.
-    const preserve = true;
-    let buffers = new Map();
-    if (preserve) buffers = await this.run(() => this.readMediaBuffers(items));
-    const { seen } = this.store.sync(chatId, items, { preserve });
-    if (preserve) await this.captureMedia(chatId, seen, buffers);
+    const buffers = await this.run(() => this.readMediaBuffers(items));
+    const { seen } = this.store.sync(chatId, items, { preserve: true, reconcileMissing: false });
+    await this.captureMedia(chatId, seen, buffers);
+    return { captured: true, messageCount: this.store.getMessages(chatId).filter(m => m.kind !== "status").length };
   }
 
   // decrypts chat media into buffers keyed by content hash; tags each item with
@@ -326,6 +316,7 @@ export default class Session extends EventEmitter {
     const buffers = new Map();
     for (const item of items) {
       if (item.kind !== "media") continue;
+      if (!item.src || !/^(blob:|data:)/i.test(item.src)) continue;
       if (this.shaBySrc.has(item.src)) {
         item.sha256 = this.shaBySrc.get(item.src);
         continue;
@@ -342,13 +333,14 @@ export default class Session extends EventEmitter {
 
   // Re-sync a chat when requested
   async resyncChat(chatId) {
-    if (this.status === "connected") await this.syncChat(chatId).catch(() => {});
+    if (this.status === "connected") await this.syncChat(chatId, { interactive: true }).catch(() => {});
   }
 
   async readBuffer(read) {
     const media = await read().catch(() => null);
     if (!media?.base64) return null;
     const buffer = Buffer.from(media.base64, "base64");
+    if (!buffer.length || buffer.length > 100 * 1024 * 1024) return null;
     const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
     return { buffer, sha256, contentType: sniffType(buffer, media.type) };
   }
@@ -363,10 +355,13 @@ export default class Session extends EventEmitter {
       const message = this.store.getById(id);
       if (!message) continue;
       const existing = message.media[0];
-      if (existing && existing.status !== "pending") continue;
+      if (existing?.status === "stored") continue;
+      if (existing?.retryAt && existing.retryAt > Date.now()) continue;
 
       const viewOnce = item.kind === "snap";
-      if (viewOnce && (!this.config.captureSnaps || item.isMe)) continue;
+      // Never open an unopened Snap automatically, even after an explicit
+      // text-chat sync. Opening a Snap requires separate user confirmation.
+      if (viewOnce) continue;
       if (viewOnce && snapsOpened >= this.config.snapsPerSync) continue;
 
       const mediaId = existing?.id || this.store.addMedia(message.uid, {
@@ -378,12 +373,12 @@ export default class Session extends EventEmitter {
         if (viewOnce) snapsOpened++;
         read = await this.run(() =>
           this.readBuffer(() =>
-            viewOnce ? this.bot.openReceivedSnap(item.snapIndex) : this.bot.readMedia(item.src)
+            viewOnce ? null : (/^(blob:|data:)/i.test(item.src || "") ? this.bot.readMedia(item.src) : null)
           )
         );
       }
       if (!read) {
-        this.store.mediaFailed(mediaId, 3);
+        this.store.mediaFailed(mediaId, "Media bytes not available in rendered browser");
         this.store.touch(message.uid);
         continue;
       }
@@ -398,7 +393,7 @@ export default class Session extends EventEmitter {
         });
       } catch (error) {
         console.error("Media upload failed", error.message);
-        this.store.mediaFailed(mediaId, 3);
+        this.store.mediaFailed(mediaId, error.message);
       }
       this.store.touch(message.uid);
     }
@@ -406,7 +401,8 @@ export default class Session extends EventEmitter {
 
   async selectChat(chatId) {
     this.activeChatId = chatId;
-    if (this.status === "connected" && chatId) await this.syncChat(chatId);
+    // Selecting a chat in Comnexus only reads the local archive. It does not
+    // open the Snapchat conversation or acknowledge its unread state.
   }
 
   async sendMessage(chatId, text) {
@@ -416,7 +412,7 @@ export default class Session extends EventEmitter {
       await this.bot.typeMessage(text);
     });
     await delay(1000);
-    await this.syncChat(chatId);
+    await this.syncChat(chatId, { interactive: false });
   }
 
   async logout() {
@@ -428,6 +424,7 @@ export default class Session extends EventEmitter {
     }
     this.store.resetSync(); // the archive stays
     this.pendingSync.clear();
+    this.passiveActivity.clear();
     this.lastStatus.clear();
     this.lastChatDiscovery = 0;
     this.chats = [];
