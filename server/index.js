@@ -186,7 +186,6 @@ io.on("connection", (socket) => {
     const { session } = entry(p);
     socket.emit("status", { accountId: p.accountId, ...session.getStatus() });
     socket.emit("chats", { accountId: p.accountId, chats: accounts.chatsWithPreviews(p.accountId) });
-    socket.emit("pairs", { accountId: p.accountId, pairs: accounts.pairs(p.accountId) });
     socket.emit("activity:list", { accountId: p.accountId, events: accounts.events(p.accountId) });
   }));
   socket.on("account:create", ack((p) => accounts.create(p)));
@@ -209,8 +208,6 @@ io.on("connection", (socket) => {
     if (!p.text?.trim()) throw new Error("text required");
     return entry(p).session.sendMessage(p.chatId, p.text.trim());
   }));
-  socket.on("pair:request", ack((p) => accounts.requestHandshake(p.accountId, p.chatId)));
-  socket.on("pair:revoke", ack((p) => accounts.revokeHandshake(p.accountId, p.chatId)));
 
   // live screen: one watched account per socket
   let watching = null;
@@ -252,7 +249,7 @@ accounts.on("accounts", (list) => io.emit("accounts", list));
 accounts.on("screen:frame", ({ accountId, frame }) =>
   io.to(`screen:${accountId}`).volatile.emit("screen:frame", { accountId, frame })
 );
-for (const event of ["chats", "chat:snapshot", "activity", "pairs"]) {
+for (const event of ["chats", "chat:snapshot", "activity"]) {
   accounts.on(event, (data) => io.emit(event, data));
 }
 for (const event of ["status", "message:new", "message:updated", "message:removed"]) {
