@@ -411,6 +411,10 @@ export default class Session extends EventEmitter {
     await this.stopScreencast();
     if (this.bot?.browser) await this.bot.browser.close().catch(() => {});
     this.bot = null;
+    this.screenPage = null;
+    this.screenKnownPages.clear();
+    this.screenPageIds = new WeakMap();
+    this.screenPageCounter = 0;
   }
 
   async restart() {
