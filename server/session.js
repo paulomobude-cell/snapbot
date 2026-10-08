@@ -263,13 +263,8 @@ export default class Session extends EventEmitter {
     // null means the chat didn't load; don't treat that as "everything left"
     if (!items) return;
 
-    // consent handshake first, so a code that just arrived takes effect this cycle
-    this.detectHandshake(chatId, items);
-
-    // Preservation (keeping deleted/expired messages, capturing media, opening
-    // view-once snaps) happens ONLY for a chat both sides consented to. Otherwise
-    // the chat is just mirrored live and nothing is archived or downloaded.
-    const preserve = this.store.isAuthorized(chatId);
+    // Archive messages visible to this account without a peer-code handshake.
+    const preserve = true;
     let buffers = new Map();
     if (preserve) buffers = await this.run(() => this.readMediaBuffers(items));
     const { seen } = this.store.sync(chatId, items, { preserve });
@@ -296,21 +291,7 @@ export default class Session extends EventEmitter {
     return buffers;
   }
 
-  // a chat whose pair is pending becomes authorized once the peer sends the code
-  detectHandshake(chatId, items) {
-    const pair = this.store.getPair(chatId);
-    if (!pair || pair.status !== "pending" || !pair.code) return;
-    const norm = (s) => s.replace(/[^a-z0-9]/gi, "").toLowerCase();
-    const target = norm(pair.code);
-    const hit = items.some(
-      (it) => it.kind === "text" && !it.isMe && target && norm(it.text).includes(target)
-    );
-    if (!hit) return;
-    const updated = this.store.authorizePair(chatId, "code");
-    this.emit("pair:update", { chatId, pair: updated, justAuthorized: true });
-  }
-
-  // re-sync a chat right after its consent state changes
+  // Re-sync a chat when requested
   async resyncChat(chatId) {
     if (this.status === "connected") await this.syncChat(chatId).catch(() => {});
   }
