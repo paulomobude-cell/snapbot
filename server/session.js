@@ -33,6 +33,7 @@ export default class Session extends EventEmitter {
     this.queue = Promise.resolve();
     this.loopTimer = null;
     this.lastFullSync = 0;
+    this.lastChatDiscovery = 0;
     this.lastStatus = new Map(); // chatId -> status string, to spot new activity
     this.screencast = null;
     this.viewers = 0;
@@ -239,12 +240,21 @@ export default class Session extends EventEmitter {
   }
 
   async syncChats() {
-    const chats = await this.run(() => this.bot.userStatus());
-    if (!chats.length && !(await this.hasChatList())) {
-      // chat list vanished: logged out or the page broke
+    const discoverAll = Date.now() - this.lastChatDiscovery > 5 * 60_000;
+    const visible = await this.run(() => this.bot.userStatus({ fullScan: discoverAll }));
+    if (!visible.length && !(await this.hasChatList())) {
+      // Chat list truly disappeared (a transient empty virtualized render is
+      // not equivalent to being logged out).
       this.setStatus("needs_login");
       return this.watchForManualLogin();
     }
+    if (discoverAll && visible.length) this.lastChatDiscovery = Date.now();
+    // Fast visible-row refreshes must not erase previously discovered
+    // conversations as the virtualized viewport changes. Keep newest visible
+    // status information while retaining the rest of the known chat list.
+    const merged = new Map(this.chats.map(chat => [chat.id, chat]));
+    for (const chat of visible) merged.set(chat.id, chat);
+    const chats = [...merged.values()];
     this.chats = chats;
     this.emit("chats", chats);
 
