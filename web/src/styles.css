@@ -575,3 +575,7 @@ video.media { cursor: default; }
   .mirror-drawer { max-height: 82dvh; }
   .mirror-drawer-scroll { max-height: calc(82dvh - 36px); }
 }
+
+/* Passive mode: a chat selection never opens Snapchat; explicit sync is opt-in. */
+.passive-controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.chat-status-event { align-self: center; margin: 7px auto; max-width: min(90%, 480px); border-radius: 14px; background: var(--hover); color: var(--muted); font-size: 12px; padding: 5px 10px; text-align: center; }
