@@ -1,0 +1,28 @@
+name: Frontend PWA verification
+on:
+  push:
+    branches: [feat/installable-pwa]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/pwa-ci.yml'
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: node --check dist/sw.js
+      - run: node --check src/pwa.js
+      - run: node scripts/pwa-smoke.mjs
