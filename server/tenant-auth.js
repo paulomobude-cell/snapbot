@@ -53,14 +53,15 @@ export class TenantAuth {
   guard(scope, ip, account = "") {
     const now = Math.floor(this.now() / 1000);
     const policies = {
-      signup: [20, 3600], login: [20, 900], recovery: [8, 3600],
-      key: [30, 900], admin: [15, 900],
+      signup: [30, 3600], login: [240, 900], recovery: [120, 3600],
+      key: [100, 900], admin: [300, 900],
     };
     const [max, seconds] = policies[scope] || [20, 900];
     const ipKey = hash(scope + "\0ip\0" + String(ip));
     const userKey = hash(scope + "\0account\0" + String(ip) + "\0" + normPhone(account));
-    const reserve = key => this.sql.attempts.run(key, now, now - seconds, now - seconds, now - seconds, max);
-    if (!reserve(ipKey).changes || (account && !reserve(userKey).changes))
+    const reserve = (key, limit) => this.sql.attempts.run(key, now, now - seconds, now - seconds, now - seconds, limit);
+    const perUserLimit = scope === "login" ? 10 : scope === "recovery" ? 5 : max;
+    if (!reserve(ipKey, max).changes || (account && !reserve(userKey, perUserLimit).changes))
       this.fail("Too many attempts. Try again later.", 429);
     return { success: () => { if (account) this.sql.clearAttempt.run(userKey); } };
   }
