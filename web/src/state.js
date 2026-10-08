@@ -8,6 +8,7 @@ const initial = {
   chats: {}, // accountId -> Chat[] (each carries .preservation)
   messages: {}, // accountId -> { chatId -> Message[] }
   activity: {}, // accountId -> Event[] newest first
+  backfill: {}, // accountId -> selected-chat archive progress
   unread: loadUnread(), // accountId -> { chatId -> uid[] }
   config: { maxAccounts: 3 },
 };
@@ -37,7 +38,7 @@ function reducer(state, a) {
   switch (a.type) {
     case "reset":
       // reconnect: forget cached messages, the server re-sends current state
-      return { ...state, messages: {}, chats: {} };
+      return { ...state, messages: {}, chats: {}, backfill: {} };
     case "config":
       return { ...state, config: { ...state.config, ...a.config } };
     case "accounts": {
@@ -52,6 +53,7 @@ function reducer(state, a) {
         chats: keep(state.chats),
         messages: keep(state.messages),
         activity: keep(state.activity),
+        backfill: keep(state.backfill),
         unread: keep(state.unread),
       };
     }
@@ -101,6 +103,8 @@ function reducer(state, a) {
       if (!state.unread[acc]?.[a.chatId]?.length) return state;
       return { ...state, unread: setIn(state.unread, acc, { ...state.unread[acc], [a.chatId]: [] }) };
     }
+    case "backfill:progress":
+      return { ...state, backfill: setIn(state.backfill, acc, a.progress) };
     case "activity:list":
       return { ...state, activity: setIn(state.activity, acc, a.events) };
     case "activity": {
@@ -142,6 +146,7 @@ export function useBackend(settings, { onMessage }) {
     });
     s.on("message:updated", ({ accountId, message }) => dispatch({ type: "updated", accountId, message }));
     s.on("message:removed", (d) => dispatch({ type: "removed", ...d }));
+    s.on("backfill:progress", (d) => dispatch({ type: "backfill:progress", ...d }));
     s.on("activity:list", (d) => dispatch({ type: "activity:list", ...d }));
     s.on("activity", (d) => dispatch({ type: "activity", ...d }));
     setSocket(s);

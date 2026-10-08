@@ -73,9 +73,9 @@ export default function ChatList({ account, status, error, chats, messages, unre
                   <span className="chatrow-name">{chat.name}</span>
                   {chat.status?.streak && <span className="streak">{chat.status.streak}</span>}
                 </span>
-                <span className="chatrow-preview">
+                <span className="chatrow-preview" title="Status copied from Snapchat Web; mobile may update sooner">
                   {preview ? <>{last.isMe ? "You: " : ""}{last.kind === "media" ? "📷 Photo/Video" : last.kind === "snap" ? "👻 Snap" : preview}</>
-                    : <span className="muted">{[chat.status?.type, chat.status?.time].filter(Boolean).join(" · ") || "No messages"}</span>}
+                    : <span className="muted">{[chat.status?.type, chat.status?.time].filter(Boolean).join(" · ") || "No messages"}{chat.statusSource === "snapchat-web" ? " · Web" : ""}</span>}
                 </span>
               </span>
               <span className="chatrow-side">
