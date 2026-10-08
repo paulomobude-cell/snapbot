@@ -722,6 +722,14 @@ export default class SnapBot {
         while (el && !(el.scrollHeight > el.clientHeight + 2 && el.clientHeight > 0)) el = el.parentElement;
         return el?.scrollTop || 0;
       }, selector);
+      await this.page.evaluate(sel => {
+        const inner = document.querySelector(sel);
+        let el = inner;
+        while (el && !(el.scrollHeight > el.clientHeight + 2 && el.clientHeight > 0)) el = el.parentElement;
+        if (el) el.scrollTop = 0;
+      }, selector);
+      await delay(120);
+      title = await this.page.$(`span[id="title-${chatId}"]`);
       for (let step = 0; step < 160 && !title; step++) {
         const moved = await this.page.evaluate(sel => {
           const inner = document.querySelector(sel);
