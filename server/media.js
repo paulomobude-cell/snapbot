@@ -32,7 +32,11 @@ export default class MediaStorage {
   constructor(config) {
     this.secret = crypto.createHash("sha256").update(`media:${config.secretKey}`).digest();
     this.publicUrl = config.publicUrl; // backend's own URL, for local signed links
-    const r2 = config.r2;
+    // Keep local storage mounted even if R2 is enabled: existing media records
+    // refer to bare keys and must stay readable until explicitly migrated.
+    this.dir = path.join(config.dataDir, "media");
+    fs.mkdirSync(this.dir, { recursive: true });
+    const r2 = config.r2 || {};
     if (r2.accountId && r2.accessKeyId && r2.secretAccessKey && r2.bucket) {
       this.kind = "r2";
       this.bucketUrl = `https://${r2.accountId}.r2.cloudflarestorage.com/${r2.bucket}`;
@@ -44,8 +48,6 @@ export default class MediaStorage {
       });
     } else {
       this.kind = "local";
-      this.dir = path.join(config.dataDir, "media");
-      fs.mkdirSync(this.dir, { recursive: true });
     }
   }
 
@@ -70,16 +72,18 @@ export default class MediaStorage {
   }
 
   async remove(key) {
+    // Delete both for cross-backend key migration; R2 deletion failures are
+    // surfaced so callers can retry rather than silently leak stored media.
     if (this.kind === "r2") {
-      await this.client.fetch(`${this.bucketUrl}/${encodeKey(key)}`, { method: "DELETE" }).catch(() => {});
-      return;
+      const res = await this.client.fetch(`${this.bucketUrl}/${encodeKey(key)}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 404) throw new Error(`R2 deletion failed: ${res.status}`);
     }
     await fs.promises.rm(this.localPath(key), { force: true });
   }
 
   // signed GET link valid for `seconds`
   async url(key, seconds, baseUrl) {
-    if (this.kind === "r2") {
+    if (this.kind === "r2" && !fs.existsSync(this.localPath(key))) {
       const signed = await this.client.sign(
         `${this.bucketUrl}/${encodeKey(key)}?X-Amz-Expires=${seconds}`,
         { method: "GET", aws: { signQuery: true } }
