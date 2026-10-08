@@ -782,6 +782,20 @@ export default class SnapBot {
   //   { kind: "media",  from, isMe, text: "", time, src, mediaType: "image"|"video" }
   //   { kind: "snap",   from, isMe, text: "", time, snapIndex }   tap-to-view snap tile
   //   { kind: "notice", notice: "deleted", from, text, time }      "X deleted a chat"
+  // Visibility check only: no clicks, fetches, navigation or read-state writes.
+  async visibleChatId() {
+    return this.page.evaluate(() => {
+      const roots = document.querySelectorAll("[id^='cv-']");
+      for (const el of roots) {
+        const style = getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        if (style.display !== "none" && style.visibility !== "hidden" &&
+            rect.width > 0 && rect.height > 0) return el.id.slice(3);
+      }
+      return null;
+    });
+  }
+
   async readMessages(chatId, chatName = "Them", options = {}) {
     const {
       deletedPattern = "\\bdeleted (a|an|the)? ?(chat|snap|message|photo|image|video|voice|audio|sticker|attachment)",
