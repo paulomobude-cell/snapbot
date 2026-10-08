@@ -36,6 +36,12 @@ export default class Session extends EventEmitter {
     this.lastStatus = new Map(); // chatId -> status string, to spot new activity
     this.screencast = null;
     this.viewers = 0;
+    this.screenTimer = null;
+    this.screenPage = null;
+    this.screenPageIds = new WeakMap();
+    this.screenKnownPages = new Set();
+    this.screenPageCounter = 0;
+    this.screenBusy = false;
   }
 
   setStatus(status, error = null) {
@@ -412,14 +418,88 @@ export default class Session extends EventEmitter {
     await this.start();
   }
 
-  // ---- live screen (for login / captcha / 2FA) ----
+  // ---- interactive live browser: login, OAuth popups, captcha and 2FA ----
+  // Each Snapchat account has its own browser/profile. Only pages in this browser
+  // can be selected and controlled. Never return credentials to the frontend.
+  async screenPages() {
+    if (!this.bot?.browser) return [];
+    const pages = (await this.bot.browser.pages()).filter((page) =>
+      page && !page.isClosed?.() && !String(page.url?.() || "").startsWith("devtools:")
+    );
+    const current = new Set(pages);
+    for (const page of pages) {
+      if (!this.screenPageIds.has(page)) {
+        this.screenPageIds.set(page, String(++this.screenPageCounter));
+        // Popups (e.g. Google sign-in) should become visible automatically.
+        if (this.screenKnownPages.size && page !== this.bot.page) this.screenPage = page;
+      }
+    }
+    this.screenKnownPages = current;
+    if (!current.has(this.screenPage)) {
+      this.screenPage = current.has(this.bot.page) ? this.bot.page : pages[pages.length - 1] || null;
+    }
+    return pages;
+  }
+
+  async activeScreenPage() {
+    await this.screenPages();
+    return this.screenPage;
+  }
+
+  async selectScreenPage(id) {
+    const pages = await this.screenPages();
+    const target = pages.find((page) => this.screenPageIds.get(page) === String(id));
+    if (!target) throw new Error("That browser tab was closed. Refresh the screen.");
+    this.screenPage = target;
+    await target.bringToFront().catch(() => {});
+    await this.pushScreenFrame();
+  }
+
+  async pushScreenFrame() {
+    if (this.screenBusy || !this.viewers) return;
+    this.screenBusy = true;
+    try {
+      const pages = await this.screenPages();
+      const page = this.screenPage;
+      if (!page) return;
+      const tabs = await Promise.all(pages.map(async (p) => {
+        const url = String(p.url?.() || "");
+        const title = await p.title().catch(() => "");
+        let site = "Browser tab";
+        try { site = new URL(url).hostname || site; } catch {}
+        return {
+          id: this.screenPageIds.get(p),
+          label: (title || site).slice(0, 65),
+          site,
+        };
+      }));
+      const image = await page.screenshot({ type: "jpeg", quality: 62, captureBeyondViewport: false });
+      if (!image) return;
+      const vp = page.viewport?.() || { width: 1280, height: 720 };
+      this.emit("screen:frame", {
+        frame: Buffer.from(image).toString("base64"),
+        pageId: this.screenPageIds.get(page),
+        pages: tabs,
+        width: vp.width,
+        height: vp.height,
+      });
+    } catch (error) {
+      // Navigating pages temporarily destroys their execution context.
+      if (this.viewers && !/navigat|destroyed|closed|Target closed/i.test(error.message))
+        console.warn("Live screen capture:", error.message);
+    } finally {
+      this.screenBusy = false;
+    }
+  }
 
   async addViewer() {
     this.viewers++;
-    if (this.viewers === 1) await this.startScreencast();
-    // screencast only sends frames when the page repaints, so send the current view now
-    const image = await this.screenshot().catch(() => null);
-    if (image) this.emit("screen:frame", Buffer.from(image).toString("base64"));
+    if (this.viewers === 1) {
+      // Polling screenshots also tracks browser popups; CDP screencast only
+      // follows the initial tab and can freeze on pages that don't repaint.
+      this.screenTimer = setInterval(() => void this.pushScreenFrame(), 1200);
+    }
+    await this.pushScreenFrame();
   }
 
   async removeViewer() {
@@ -428,58 +508,66 @@ export default class Session extends EventEmitter {
   }
 
   async startScreencast() {
-    if (this.screencast || !this.bot?.page?.createCDPSession) return;
-    try {
-      const client = await this.bot.page.createCDPSession();
-      this.screencast = client;
-      client.on("Page.screencastFrame", async ({ data, sessionId }) => {
-        this.emit("screen:frame", data);
-        await client.send("Page.screencastFrameAck", { sessionId }).catch(() => {});
-      });
-      await client.send("Page.startScreencast", {
-        format: "jpeg",
-        quality: 60,
-        maxWidth: 1280,
-        maxHeight: 720,
-        everyNthFrame: 2,
-      });
-    } catch (error) {
-      console.error("Screencast failed", error.message);
+    // Kept for callers created before this change; screenshots are tab-aware.
+    await this.pushScreenFrame();
+  }
+
+  async stopScreencast() {
+    if (this.screenTimer) clearInterval(this.screenTimer);
+    this.screenTimer = null;
+    if (this.screencast) {
+      await this.screencast.send("Page.stopScreencast").catch(() => {});
+      await this.screencast.detach().catch(() => {});
       this.screencast = null;
     }
   }
 
-  async stopScreencast() {
-    if (!this.screencast) return;
-    await this.screencast.send("Page.stopScreencast").catch(() => {});
-    await this.screencast.detach().catch(() => {});
-    this.screencast = null;
-  }
-
   async screenshot() {
-    if (!this.bot?.page) return null;
-    return this.bot.page.screenshot({ type: "jpeg", quality: 60 });
+    const page = await this.activeScreenPage();
+    return page ? page.screenshot({ type: "jpeg", quality: 60 }) : null;
   }
 
-  // x, y are 0..1 relative to the frame
   async click(x, y) {
-    if (!this.bot?.page) return;
-    const { width, height } = this.bot.page.viewport();
-    await this.run(() => this.bot.page.mouse.click(x * width, y * height));
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
+      throw new Error("Invalid live screen coordinates");
+    }
+    return this.run(async () => {
+      const page = await this.activeScreenPage();
+      if (!page) throw new Error("Browser page not ready");
+      const { width, height } = page.viewport?.() || { width: 1280, height: 720 };
+      await page.mouse.click(x * width, y * height);
+    });
   }
 
   async type(text) {
-    if (!this.bot?.page) return;
-    await this.run(() => this.bot.page.keyboard.type(text, { delay: 50 }));
+    if (typeof text !== "string" || !text || text.length > 2000) throw new Error("Type 1–2000 characters");
+    return this.run(async () => {
+      const page = await this.activeScreenPage();
+      if (!page) throw new Error("Browser page not ready");
+      await page.keyboard.type(text, { delay: 12 });
+    });
   }
 
   async press(key) {
-    if (!this.bot?.page) return;
-    await this.run(() => this.bot.page.keyboard.press(key));
+    if (!["Enter", "Tab", "Backspace", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft",
+      "ArrowRight", "Delete", "Space"].includes(key)) throw new Error("Unsupported browser key");
+    return this.run(async () => {
+      const page = await this.activeScreenPage();
+      if (!page) throw new Error("Browser page not ready");
+      await page.keyboard.press(key);
+    });
   }
 
-  async scroll(deltaY) {
-    if (!this.bot?.page) return;
-    await this.run(() => this.bot.page.mouse.wheel({ deltaY }));
+  async scroll(deltaY, deltaX = 0) {
+    if (!Number.isFinite(deltaY) || !Number.isFinite(deltaX)) throw new Error("Invalid scroll");
+    return this.run(async () => {
+      const page = await this.activeScreenPage();
+      if (!page) throw new Error("Browser page not ready");
+      await page.mouse.wheel({
+        deltaY: Math.max(-1400, Math.min(1400, deltaY)),
+        deltaX: Math.max(-1400, Math.min(1400, deltaX)),
+      });
+    });
   }
+
 }
