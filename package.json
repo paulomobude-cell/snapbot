@@ -6,14 +6,22 @@
   "devDependencies": {},
   "type": "module",
   "scripts": {
+    "start": "node server/index.js",
+    "dev": "MOCK=true API_TOKEN=dev node server/index.js",
     "bot": "node index.js"
   },
   "author": "Roger Rodrigues",
   "dependencies": {
+    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "express": "^5.1.0",
     "puppeteer": "^24.1.1",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "socket.io": "^4.8.1"
   },
-  "license": "ISC"
+  "license": "ISC",
+  "engines": {
+    "node": ">=20"
+  }
 }

@@ -517,7 +517,7 @@ export default class SnapBot {
               if (borderElem) {
                 const color = getComputedStyle(borderElem).borderColor;
                 if (color === "rgb(242, 60, 87)") sender = "Me";
-                else if (color === "rgb(14, 173, 255)") sender = "Eren Yeager";
+                else if (color === "rgb(14, 173, 255)") sender = "Them";
                 else sender = "Unknown";
               }
             }
@@ -690,6 +690,88 @@ export default class SnapBot {
 
     const sendButton = await this.page.$("button[type='submit']"); 
     await sendButton.click();
+  }
+
+  // opens a chat by id (no-op if it's already open). Returns false if the chat isn't in the list
+  async openChat(chatId) {
+    const convoSelector = `[id="cv-${chatId}"]`;
+    if (await this.page.$(convoSelector)) return true;
+    const title = await this.page.$(`span[id="title-${chatId}"]`);
+    if (!title) return false;
+    await title.click();
+    try {
+      await this.page.waitForSelector(convoSelector, { timeout: 10000 });
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // returns the messages currently shown in a chat as a flat list,
+  // or null if the chat isn't open (so callers can tell "not loaded" from "empty")
+  async readMessages(chatId, chatName = "Them") {
+    return await this.page.evaluate(
+      (chatId, chatName) => {
+        const $chatList = document.querySelector(`[id="cv-${chatId}"]`);
+        if (!$chatList) return null;
+
+        const ME = "rgb(242, 60, 87)";
+        const output = [];
+        let currentTime = "";
+
+        const senderFromBorder = (el) => {
+          const borderElem = el.querySelector(".KB4Aq");
+          if (!borderElem) return null;
+          return getComputedStyle(borderElem).borderColor === ME
+            ? "Me"
+            : chatName;
+        };
+        const push = (sender, el) => {
+          el.querySelectorAll("span.ogn1z").forEach((span) => {
+            const text = span.textContent.trim();
+            if (text) {
+              output.push({
+                from: sender,
+                isMe: sender === "Me",
+                text,
+                time: currentTime,
+              });
+            }
+          });
+        };
+
+        $chatList.querySelectorAll("li.T1yt2").forEach((li) => {
+          const timeElem = li.querySelector("time span");
+          if (timeElem) {
+            currentTime = timeElem.textContent.trim();
+            return;
+          }
+          const blocks = li.querySelectorAll("li");
+          if (blocks.length > 0) {
+            blocks.forEach((block) => {
+              const sender =
+                block.querySelector("header .nonIntl")?.textContent.trim() ||
+                senderFromBorder(block) ||
+                "Unknown";
+              push(sender, block);
+            });
+          } else {
+            push(senderFromBorder(li) || "Unknown", li);
+          }
+        });
+        return output;
+      },
+      chatId,
+      chatName
+    );
+  }
+
+  // types a message into the currently open chat
+  async typeMessage(text) {
+    const textbox = 'div[role="textbox"].euyIb';
+    await this.page.waitForSelector(textbox, { timeout: 10000 });
+    await this.page.type(textbox, text, { delay: 30 });
+    await this.page.keyboard.press("Enter");
   }
 
   // add custom methods

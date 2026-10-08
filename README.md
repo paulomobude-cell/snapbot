@@ -11,6 +11,8 @@ Built on top of Puppeteer, SnapBot enables developers to create powerful Snapcha
 
 Whether you're automating daily snaps, managing multiple accounts, or building complex chat workflows, SnapBot abstracts the hard parts so you can focus on what matters: the logic and creativity behind your automation.
 
+> **New: live dashboard.** Run SnapBot as a server (Railway) with a web chat dashboard (Vercel), similar to wppconnect-server. Messages deleted on Snapchat are removed from the dashboard, and all messages disappear after 24h. See [DEPLOY.md](DEPLOY.md).
+
 ## 💼 Use Cases
 * Daily content distribution via snaps
 * Streak automation for agencies or influencers
