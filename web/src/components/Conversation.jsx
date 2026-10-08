@@ -88,7 +88,7 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
         {groups.map((g) => (
           <div key={g.key}>
             {g.time && <div className="day-sep"><span>{g.time}</span></div>}
-            <div className={`group ${g.isMe ? "me" : "them"}`}>
+            <div className={`group ${g.isStatus ? "statuses" : g.isMe ? "me" : "them"}`}>
               {!g.isMe && g.messages.some(m => m.kind !== "status") && <div className="group-from">{g.from}</div>}
               {g.messages.map((m) => (
                 m.kind === "status" || m.kind === "notice"
