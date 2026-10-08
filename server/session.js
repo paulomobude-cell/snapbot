@@ -42,6 +42,7 @@ export default class Session extends EventEmitter {
     this.screenKnownPages = new Set();
     this.screenPageCounter = 0;
     this.screenBusy = false;
+    this.lastScreenHash = null;
   }
 
   setStatus(status, error = null) {
@@ -477,15 +478,36 @@ export default class Session extends EventEmitter {
           site,
         };
       }));
-      const image = await page.screenshot({ type: "jpeg", quality: 62, captureBeyondViewport: false });
-      if (!image) return;
+      // Capture at native viewport resolution (1920x1080 in production).
+      // Higher JPEG quality makes login buttons/text legible when fullscreen.
+      // If a busy page produces an oversized JPEG, lower compression quality
+      // rather than exceed typical WebSocket/polling frame limits.
+      const options = { type: "jpeg", captureBeyondViewport: false };
+      let image;
+      let quality = 86;
+      for (const candidate of [86, 72, 55, 40]) {
+        quality = candidate;
+        image = await page.screenshot({ ...options, quality: candidate });
+        if (image?.length <= 580 * 1024) break;
+      }
+      if (!image || image.length > 580 * 1024) {
+        console.warn("Live Screen: large frame omitted to protect Socket.IO transport");
+        return;
+      }
       const vp = page.viewport?.() || { width: 1280, height: 720 };
+      const pageId = this.screenPageIds.get(page);
+      const fingerprint = crypto.createHash("sha1").update(image)
+        .update(pageId || "").update(JSON.stringify(tabs)).digest("hex");
+      // Don't repeatedly transfer the same screen when nothing repainted.
+      if (fingerprint === this.lastScreenHash) return;
+      this.lastScreenHash = fingerprint;
       this.emit("screen:frame", {
         frame: Buffer.from(image).toString("base64"),
-        pageId: this.screenPageIds.get(page),
+        pageId,
         pages: tabs,
         width: vp.width,
         height: vp.height,
+        quality,
       });
     } catch (error) {
       // Navigating pages temporarily destroys their execution context.
@@ -510,7 +532,7 @@ export default class Session extends EventEmitter {
     // Restart the capture loop after the browser restarts while a viewer is open.
     if (!this.viewers) return;
     if (!this.screenTimer) {
-      this.screenTimer = setInterval(() => void this.pushScreenFrame(), 1200);
+      this.screenTimer = setInterval(() => void this.pushScreenFrame(), 1600);
     }
     await this.pushScreenFrame();
   }
@@ -518,6 +540,7 @@ export default class Session extends EventEmitter {
   async stopScreencast() {
     if (this.screenTimer) clearInterval(this.screenTimer);
     this.screenTimer = null;
+    this.lastScreenHash = null;
     if (this.screencast) {
       await this.screencast.send("Page.stopScreencast").catch(() => {});
       await this.screencast.detach().catch(() => {});
