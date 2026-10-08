@@ -30,12 +30,12 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
   };
 
   const addText = (text, node, forcedSender) => {
-    const value = String(text || "").replace(/\\s+/g, " ").trim();
+    const value = String(text || "").replace(/\s+/g, " ").trim();
     if (!value || value.length > 6000) return;
     const from = forcedSender || senderFrom(node);
     const base = { from, isMe: from === "Me", time: currentTime };
     if (deletedRe.test(value) && value.length < 120) {
-      const who = value.split(/\\s+deleted\\b/i)[0].trim();
+      const who = value.split(/\s+deleted\b/i)[0].trim();
       output.push({ kind: "notice", notice: "deleted", ...base, from: who || from, text: value });
     } else if (snapRe.test(value) && value.length < 160) {
       output.push({ kind: "snap", ...base, text: "", snapIndex: snapIndex++ });
@@ -98,8 +98,8 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
     const style = getComputedStyle(el);
     return style.display !== "none" && style.visibility !== "hidden";
   };
-  const dateOnly = /^(today|yesterday|tomorrow|mon(day)?|tue(sday)?|wed(nesday)?|thu(rsday)?|fri(day)?|sat(urday)?|sun(day)?|\\d{1,2}:\\d{2}(?:\\s*[ap]m)?|received|delivered|opened|screenshotted|saved in chat)$/i;
-  const seenText = new Set();
+  const dateOnly = /^(today|yesterday|tomorrow|mon(day)?|tue(sday)?|wed(nesday)?|thu(rsday)?|fri(day)?|sat(urday)?|sun(day)?|\d{1,2}:\d{2}(?:\s*[ap]m)?|received|delivered|opened|screenshotted|saved in chat)$/i;
+  const seenText = new Map();
   for (const el of root.querySelectorAll("*")) {
     if (isIgnored(el) || !isVisible(el)) continue;
     if (el.tagName === "IMG" || el.tagName === "VIDEO") {
@@ -110,15 +110,15 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
     // A leaf (or wrapper containing only empty decorative descendants) can
     // represent a message. Avoid collecting the same text from its ancestors.
     if ([...el.children].some(child => child.textContent?.trim())) continue;
-    const value = (el.textContent || "").replace(/\\s+/g, " ").trim();
+    const value = (el.textContent || "").replace(/\s+/g, " ").trim();
     if (!value || dateOnly.test(value) || value.length > 6000) continue;
     if (el.matches?.("[class*='time' i], [class*='status' i], [class*='timestamp' i]")) continue;
     // Repeated identical text elements under the same bubble are duplicate
     // markup, not separate messages. Identical texts in separate bubbles stay.
     const bubble = el.closest?.("[data-message-id], [data-testid*='message' i], li, [role='listitem']") || el;
-    const id = (bubble.getAttribute?.("data-message-id") || bubble.getAttribute?.("data-testid") || "") + "|" + value;
     if (seenText.has(bubble) && seenText.get(bubble)?.has(value)) continue;
-    if (!seenText.has(bubble)) seenText.add(bubble);
+    if (!seenText.has(bubble)) seenText.set(bubble, new Set());
+    seenText.get(bubble).add(value);
     // Ignore untrusted metadata selectors only if they are visibly plain UI;
     // otherwise favor preserving the message over silently dropping it.
     addText(value, el);
