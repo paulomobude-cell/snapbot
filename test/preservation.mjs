@@ -1,4 +1,4 @@
-// Consent-gating + preservation regression test. Runs the real store/session/
+// Automatic archiving regression test. Runs the real store/session/
 // accounts stack against the mock bot (no Snapchat, no browser).
 //   node test/preservation.mjs
 import fs from "fs";
@@ -39,49 +39,22 @@ async function connected(accounts, id) {
   throw new Error(`account not connected: ${session.status}`);
 }
 
-// 1) consent gate + handshake + revoke
-async function testConsent(root) {
-  const dir = fs.mkdtempSync(path.join(root, "consent-"));
+// 1) archive messages without a peer-code handshake
+async function testArchive(root) {
+  const dir = fs.mkdtempSync(path.join(root, "archive-"));
   const { db, accounts } = makeAccounts(dir);
-
   const main = accounts.create({ label: "Main", username: "me", password: "pw" });
   await connected(accounts, main.id);
   const A = accounts.get(main.id);
   A.session.stopLoop();
   await A.session.syncChats();
   await A.session.syncChat("sam");
-
-  check("un-preserved by default", !A.store.isAuthorized("sam"));
-  for (let i = 0; i < 3; i++) { A.session.bot.simulate(); await A.session.syncChat("sam"); }
-  check("mirror-only keeps nothing deleted", A.store.getMessages("sam").every((m) => m.state === "live"));
-
-  const req = accounts.requestHandshake(main.id, "sam");
-  check("handshake pending with code", req.status === "pending" && /^SNAP-/.test(req.code));
-  check("not preserved while pending", !A.store.isAuthorized("sam"));
-
-  A.session.bot.inject("sam", "Sam", `ok ${req.code}`);
+  A.session.bot.simulate();
   await A.session.syncChat("sam");
-  check("authorized after peer sends code", A.store.isAuthorized("sam"));
-
-  A.session.bot.simulate(); await A.session.syncChat("sam");
-  A.session.bot.simulate(); await A.session.syncChat("sam");
-  const deleted = A.store.getMessages("sam").filter((m) => m.state === "deleted");
-  check("deleted messages preserved", deleted.length > 0);
-  check("deleted shows the bin mark", deleted.every((m) => m.display.startsWith("🗑️")));
-
-  await accounts.revokeHandshake(main.id, "sam");
-  check("revoke clears the pair", !A.store.getPair("sam"));
-  check("revoke purges the archive", A.store.getMessages("sam").every((m) => m.state === "live"));
-
-  // linked: peer is another of your own accounts
-  const alpha = accounts.create({ label: "Alpha", username: "alpha", password: "pw" });
-  accounts.create({ label: "Beta", username: "beta", password: "pw" });
-  await connected(accounts, alpha.id);
-  accounts.get(alpha.id).session.stopLoop();
-  await accounts.get(alpha.id).session.syncChats();
-  const linked = accounts.requestHandshake(alpha.id, "beta");
-  check("linked auto-authorizes own account", linked.status === "authorized" && linked.method === "linked");
-
+  await A.session.syncChat("sam");
+  const archived = A.store.getMessages("sam").filter((m) => m.state !== "live");
+  check("automatic archiving keeps removed messages", archived.length > 0);
+  check("archived message text stays readable", archived.every((m) => m.display === m.text));
   await accounts.stopAll();
   db.close();
 }
@@ -97,7 +70,6 @@ async function testDeletedMedia(root) {
   const A = accounts.get(main.id);
   A.session.stopLoop();
   await A.session.syncChats();
-  accounts.requestHandshake(main.id, "sam"); // linked -> authorized
   await A.session.syncChat("sam");
   await A.session.syncChat("sam");
 
@@ -132,7 +104,7 @@ async function testDeletedMedia(root) {
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "snapbot-test-"));
 try {
-  await testConsent(root);
+  await testArchive(root);
   await testDeletedMedia(root);
   console.log(`\n${passed} checks passed`);
 } finally {
