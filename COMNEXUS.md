@@ -11,11 +11,12 @@ This release changes SnapBot from a single shared `API_TOKEN` dashboard to a mul
 - REST requests and Socket.IO listeners/actions are authorized by the session's tenant. A user may not see or control accounts or message archives owned by other tenants.
 - `API_TOKEN` stays configured on Railway for service identity and backward-compatible secret fallback, but it **no longer authenticates a browser**.
 - `ADMIN_API_TOKEN` is an entirely separate 32+ character secret. It belongs **only on Railway**. Admin Core asks for it when opened; the frontend does not bundle or persist it.
-- Login/signup/recovery/admin requests are rate-limited. Browser sockets associated with revoked credentials are disconnected.
+- Login/signup/recovery/admin requests are rate-limited. Signing out revokes only the current device credential; browser sockets associated with revoked credentials are disconnected.
 
 ## Upgrading an existing installation without data loss
 
 1. **Back up the SnapBot /data volume first**, including `snapbot.db`, `snapbot.db-wal`, `snapbot.db-shm`, `profiles/` and `media/`. Do not change the existing `SECRET_KEY` or `API_TOKEN` values; the former decrypts stored Snapchat passwords and signs legacy local media URLs.
+   The first Comnexus database migration also automatically writes a SQLite-consistent snapshot under `/data/backups/snapbot-pre-comnexus-*.sqlite` **before any schema updates**. This is a rollback aid, not a substitute for an external off-volume backup.
 2. Add a strong, unique `ADMIN_API_TOKEN` variable to the **SnapBot** Railway service.
 3. Deploy the merge to `main` and allow both Railway and Vercel to finish. Vercel still only needs `VITE_API_URL=https://<snapbot-railway-origin>`. Do NOT add `VITE_API_TOKEN`; `API_TOKEN` set on Vercel isn't used as a user credential.
 4. Refresh the frontend. The old backend-Connect screen is replaced with Comnexus **Sign up / Log in / Personal API key** forms. The legacy shared token stored by older frontends in localStorage is removed.
@@ -41,7 +42,8 @@ Keep one Railway replica due to the SQLite database and persistent Chromium prof
 Uses endpoints requiring a valid `x-admin-key` header; other credentials cannot access them:
 
 - `GET /api/admin/overview`: counts for users, accounts, active sessions, archived messages, and recorded media bytes.
-- `GET /api/admin/users`: users, owned sessions, and unassigned legacy accounts (no passwords/keys).
+- `GET /api/admin/users`: users, owned sessions, per-user archive/media usage, and unassigned legacy accounts (no passwords/keys).
+- `GET /api/admin/audit`: recent admin claims and deletions.
 - `POST /api/admin/claim`: assign an unowned historical Snapchat account once.
 - `DELETE /api/admin/users/:id`: delete the Comnexus user and their Snapchat accounts, with full phone-number confirmation.
 
