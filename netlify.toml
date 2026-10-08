@@ -1,4 +1,5 @@
 # Netlify configuration for the Vite frontend.
+# Rebuild marker: apply latest Netlify environment variables (2026-10-08).
 # Keep Railway as the separate Snapchat/SQLite/Chromium backend.
 # Config lives at repository root so Netlify Git import needs no manual
 # base-directory override. All paths under [build] resolve from web/.
