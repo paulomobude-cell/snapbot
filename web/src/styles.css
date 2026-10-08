@@ -329,14 +329,25 @@ input[type="checkbox"] { width: auto; accent-color: var(--me); }
 .login-form summary { font-weight: 600; cursor: pointer; }
 .login-form .stack { margin-top: 12px; }
 .login-form p { margin: 12px 0; }
-.live-browser-expanded {
+/* Full-window fallback for iOS Safari, plus native Fullscreen API.
+   Keep the input panel and other controls accessible beneath the browser. */
+.live-browser-expanded, .live-browser:fullscreen {
   position: fixed; inset: 0; z-index: 90; width: 100vw; height: 100dvh;
-  background: var(--panel); overflow: auto;
+  background: var(--panel); overflow: auto; padding-bottom: env(safe-area-inset-bottom, 0px);
 }
-.live-browser-expanded .screen-viewport { max-height: min(68vh, 860px); }
+.live-browser:fullscreen { display: flex; }
+.live-browser-expanded .screen-viewport, .live-browser:fullscreen .screen-viewport {
+  flex: 1 1 auto; min-height: min(45vh, 380px); max-height: none;
+}
+.live-browser-expanded .screen, .live-browser:fullscreen .screen { min-width: 100%; }
+.live-browser-expanded .panel-head, .live-browser:fullscreen .panel-head {
+  padding-top: max(12px, env(safe-area-inset-top, 12px));
+}
 @media (max-width: 760px) {
   .screen-viewport { max-height: 42vh; }
-  .live-browser-expanded .screen-viewport { max-height: 58vh; }
+  .live-browser-expanded .screen-viewport, .live-browser:fullscreen .screen-viewport {
+    min-height: 35vh; max-height: none;
+  }
   .screen-toolbar .muted:last-child { font-size: 11px; }
 }
 .activity { list-style: none; margin: 0; padding: 0 8px; }
