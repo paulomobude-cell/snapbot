@@ -131,10 +131,17 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
   const looksQuoted = node => {
     if (node.matches?.(quotedSelector)) return true;
     if (!["DIV", "BLOCKQUOTE", "SECTION"].includes(node.tagName)) return false;
+    const inner = leaves(node);
+    if (inner.length < 2 || inner.length > 12) return false;
+    const first = normalize(inner[0]?.textContent);
+    if (!(/^(me|you)$/i.test(first) || first.toLowerCase() === chatName.toLowerCase())) return false;
+    // Snapchat sometimes puts the colored quote stripe on a child wrapper,
+    // rather than on the outer inset. Keep this tightly gated by an author
+    // label and small nested card to avoid misidentifying whole conversations.
     const leftBorder = parseFloat(getComputedStyle(node).borderLeftWidth || "0");
-    if (leftBorder < 2) return false;
-    const first = normalize(leaves(node)[0]?.textContent);
-    return /^(me|you)$/i.test(first) || first.toLowerCase() === chatName.toLowerCase();
+    return leftBorder >= 2 || [...(node.children || [])].some(child =>
+      parseFloat(getComputedStyle(child).borderLeftWidth || "0") >= 2
+    );
   };
   const cleanName = value => /^(me|you)$/i.test(value) ? "Me"
     : value.toLowerCase() === chatName.toLowerCase() ? chatName : value;
@@ -193,6 +200,13 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
     quoteRoots.add(quote);
     for (const el of inner) seenTextNodes.add(el);
     for (const el of replyLeaves) seenTextNodes.add(el);
+    // Snapchat may render a separate "ME" or friend's name label outside
+    // the inner quote. It is metadata, not a one-word chat message.
+    for (const el of leaves(container)) {
+      const label = normalize(el.textContent);
+      if (/^(me|you)$/i.test(label) || label.toLowerCase() === chatName.toLowerCase())
+        seenTextNodes.add(el);
+    }
   }
 
   const legacy = root.querySelectorAll("li.T1yt2");
