@@ -127,7 +127,7 @@ function Bubble({ m, onCopy }) {
     <div className={`bubble-row ${deleted ? "deleted" : ""} ${gone ? "gone" : ""}`}>
       <div className="bubble" title={`Seen ${new Date(m.firstSeenAt).toLocaleString()}`}>
         {media && <MediaView media={media} />}
-        {m.kind === "snap" && !media && <span className="snap-tag">👻 Snap{m.state === "live" ? " (not preserved)" : ""}</span>}
+        {m.kind === "snap" && !media && <span className="snap-tag">👻 Snap</span>}
         {m.text && <span className="bubble-text">{deleted ? m.display : m.text}</span>}
         {deleted && <span className="gone-tag del">Deleted</span>}
         {gone && <span className="gone-tag">No longer on Snapchat</span>}
