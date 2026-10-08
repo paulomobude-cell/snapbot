@@ -120,6 +120,9 @@ try {
   assert.equal(personal.status, 200);
   assert.equal((await request("/api/auth/me", {}, personal.body.apiKey)).body.user.id, a.body.user.id);
   assert.equal((await request("/api/auth/me", {}, keyA)).status, 200);
+  assert.equal((await post("/api/auth/logout", {}, personal.body.apiKey)).status, 200);
+  assert.equal((await request("/api/auth/me", {}, personal.body.apiKey)).status, 401);
+  assert.equal((await request("/api/auth/me", {}, keyA)).status, 200);
 
   assert.equal((await request("/api/admin/users", {}, keyA)).status, 403);
   assert.equal((await request("/api/admin/users", {}, undefined, { "x-admin-key": "wrong" })).status, 403);
