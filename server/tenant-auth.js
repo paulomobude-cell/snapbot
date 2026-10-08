@@ -33,6 +33,8 @@ export class TenantAuth {
       getSession: db.prepare("SELECT u.* FROM user_sessions s JOIN app_users u ON u.id=s.user_id WHERE s.key_hash=?"),
       addSession: db.prepare("INSERT INTO user_sessions (key_hash, user_id, created_at) VALUES (?, ?, ?)"),
       clearSessions: db.prepare("DELETE FROM user_sessions WHERE user_id=?"),
+      removeSession: db.prepare("DELETE FROM user_sessions WHERE key_hash=?"),
+      revokePrimary: db.prepare("UPDATE app_users SET api_key_hash=? WHERE api_key_hash=?"),
       insert: db.prepare("INSERT INTO app_users (id, phone, password_hash, recovery_hash, api_key_hash, role, created_at) VALUES (?, ?, ?, ?, ?, 'user', ?)"),
       rotate: db.prepare("UPDATE app_users SET api_key_hash=?, password_hash=?, recovery_hash=? WHERE id=? AND recovery_hash=?"),
       delete: db.prepare("DELETE FROM app_users WHERE id=?"),
@@ -107,6 +109,14 @@ export class TenantAuth {
     if (typeof key !== "string" || !/^[a-f0-9]{64}$/i.test(key)) return null;
     const row = this.sql.getKey.get(hash(key)) || this.sql.getSession.get(hash(key));
     return row ? this.publicUser(row) : null;
+  }
+  revoke(key) {
+    const user = this.resolve(key);
+    if (!user) return false;
+    const digest = hash(key);
+    if (this.sql.removeSession.run(digest).changes) return true;
+    // Signup-issued primary keys must also be revocable.
+    return this.sql.revokePrimary.run(hash(apiKey()), digest).changes > 0;
   }
   checkAdmin(candidate) {
     return typeof candidate === "string" && this.adminToken.length >= 32 &&
