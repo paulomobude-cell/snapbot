@@ -737,12 +737,37 @@ export default class SnapBot {
     await sendButton.click();
   }
 
-  // opens a chat by id (no-op if it's already open). Returns false if the chat isn't in the list
+  // Interactive chat selection may occur while Live Screen is displaying
+  // search results. The virtualized sidebar (title-<id>) is then unavailable.
+  // Clear only Snapchat's own visible chat search and let its regular list
+  // render again; the Comnexus search field is entirely separate.
+  async clearSnapchatSearch() {
+    return this.page.evaluate(() => {
+      const field = [...document.querySelectorAll("input")].find(input => {
+        const label = (input.getAttribute("placeholder") || input.getAttribute("aria-label") || "").toLowerCase();
+        const rect = input.getBoundingClientRect();
+        return label.includes("search") && rect.width > 0 && rect.height > 0 && input.value.trim();
+      });
+      if (!field) return false;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      if (!setter) return false;
+      setter.call(field, "");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    });
+  }
+
+  // Only the explicitly selected chat is clicked, never a background scan.
   async openChat(chatId) {
     const convoSelector = `[id="cv-${chatId}"]`;
     this.lastChatOpenReason = null;
     if (await this.visibleChatId() === chatId) return true;
     let title = await this.page.$(`span[id="title-${chatId}"]`);
+    if (!title && await this.clearSnapchatSearch()) {
+      await delay(450);
+      title = await this.page.$(`span[id="title-${chatId}"]`);
+    }
     // Offscreen rows aren't mounted in Snapchat's virtualized sidebar.
     // Reveal the requested chat by scrolling the list in bounded steps.
     if (!title) {
@@ -827,6 +852,29 @@ export default class SnapBot {
       ? "Snapchat couldn't open this chat row: " + String(lastError.message || lastError).slice(0,150)
       : "Chat row was selected but Snapchat did not show the conversation";
     return false;
+  }
+
+  // Inspect/scroll ONLY the currently opened conversation's scrollable
+  // message pane. Never scroll the sidebar or open a Snap. Used only after an
+  // explicit request to open and archive the named conversation.
+  async historyScroll(chatId, action = "inspect", position = 0) {
+    return this.page.evaluate((id, action, position) => {
+      const root = document.getElementById("cv-" + id);
+      if (!root) return { available: false, moved: false, atTop: false };
+      const choices = [root, ...root.querySelectorAll("*")].filter(el => {
+        if (el.clientHeight < 80 || el.scrollHeight < el.clientHeight + 35) return false;
+        const style = getComputedStyle(el);
+        return style.display !== "none" && style.visibility !== "hidden";
+      });
+      const el = choices.sort((a, b) => b.clientHeight - a.clientHeight)[0];
+      if (!el) return { available: false, moved: false, atTop: false };
+      const before = el.scrollTop;
+      if (action === "older") el.scrollTop = Math.max(0, before - Math.max(110, Math.floor(el.clientHeight * .72)));
+      if (action === "restore") el.scrollTop = Math.max(0, Number(position) || 0);
+      const after = el.scrollTop;
+      return { available: true, moved: action === "older" && after < before - 1,
+        atTop: after <= 2, scrollTop: after, scrollHeight: el.scrollHeight };
+    }, chatId, action, position);
   }
 
   // returns what a chat currently shows as a flat list, or null if the chat isn't

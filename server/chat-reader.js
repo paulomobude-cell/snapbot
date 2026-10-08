@@ -23,6 +23,7 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
   const output = [];
   const outputNodes = []; // DOM ordering, so saved media stays near its caption
   const seenMediaNodes = new Set();
+  const seenTextNodes = new Set();
   const append = (item, node) => {
     output.push(item);
     outputNodes.push(node);
@@ -53,7 +54,8 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
 
   const addText = (text, node, forcedSender) => {
     const value = String(text || "").replace(/\s+/g, " ").trim();
-    if (!value || value.length > 6000 || relativeTimeRe.test(value)) return;
+    if (!value || value.length > 6000 || relativeTimeRe.test(value) || seenTextNodes.has(node)) return;
+    seenTextNodes.add(node);
     const from = forcedSender || senderFrom(node);
     const base = { from, isMe: from === "Me", time: currentTime };
     if (deletedRe.test(value) && value.length < 120) {
@@ -141,7 +143,9 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
   // may render text using the legacy markup but images outside those <li>
   // blocks. The old early return silently dropped saved images/videos.
   for (const node of root.querySelectorAll("img, video, [style*='background-image']")) addMedia(node);
-  if (output.length) return inDocumentOrder();
+  // Do NOT return just because the legacy pass found media or status entries:
+  // quoted text and captions may use semantic leaves outside old span.ogn1z.
+  // Each DOM text node is only processed once across both passes.
 
   // Newer Snapchat UI versions can replace the legacy "li.T1yt2" and
   // "span.ogn1z" classes. Traverse actual text/image leaves of the selected
