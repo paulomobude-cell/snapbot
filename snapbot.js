@@ -6,6 +6,7 @@ puppeteer.use(Stealth());
 import fs from "fs";
 import fsPromise from "fs/promises";
 import { discoverChats } from "./server/chat-discovery.js";
+import { extractVisibleMessages } from "./server/chat-reader.js";
 
 function delay(time) {
   return new Promise(function (resolve) {
@@ -786,91 +787,10 @@ export default class SnapBot {
       deletedPattern = "\\bdeleted (a|an|the)? ?(chat|snap|message|photo|image|video|voice|audio|sticker|attachment)",
       snapPattern = "\\b(tap to view|tap to replay|tap to load|new snap|received snap)\\b",
     } = options;
-    return await this.page.evaluate(
-      (chatId, chatName, deletedPattern, snapPattern) => {
-        const $chatList = document.querySelector(`[id="cv-${chatId}"]`);
-        if (!$chatList) return null;
-
-        const ME = "rgb(242, 60, 87)";
-        const deletedRe = new RegExp(deletedPattern, "i");
-        const snapRe = new RegExp(snapPattern, "i");
-        const output = [];
-        let currentTime = "";
-        let snapIndex = 0;
-
-        const senderFromBorder = (el) => {
-          const borderElem = el.querySelector(".KB4Aq");
-          if (!borderElem) return null;
-          return getComputedStyle(borderElem).borderColor === ME ? "Me" : chatName;
-        };
-        const isContentImage = (img) => {
-          if (img.closest("header, span.ogn1z")) return false; // avatars, emoji
-          const w = img.naturalWidth || img.width;
-          const h = img.naturalHeight || img.height;
-          return w >= 64 && h >= 64;
-        };
-
-        const read = (sender, el) => {
-          const isMe = sender === "Me";
-          const base = { from: sender, isMe, time: currentTime };
-          const texts = [...el.querySelectorAll("span.ogn1z")];
-          const fullText = el.textContent.trim();
-
-          // "Sam deleted a chat" style notice in place of the removed message
-          if (texts.length === 0 && deletedRe.test(fullText) && fullText.length < 120) {
-            const who = fullText.split(/\s+deleted\b/i)[0].trim();
-            output.push({ kind: "notice", notice: "deleted", ...base, from: who || sender, text: fullText });
-            return;
-          }
-
-          // walk in DOM order so text and media keep their order
-          const nodes = el.querySelectorAll("span.ogn1z, img, video, button, [role='button']");
-          const seenTile = new Set();
-          for (const node of nodes) {
-            if (node.matches("span.ogn1z")) {
-              const text = node.textContent.trim();
-              if (text) output.push({ kind: "text", ...base, text });
-            } else if (node.tagName === "VIDEO") {
-              const src = node.currentSrc || node.src || node.querySelector("source")?.src;
-              if (src) output.push({ kind: "media", ...base, text: "", src, mediaType: "video" });
-            } else if (node.tagName === "IMG") {
-              if (isContentImage(node) && node.src) {
-                output.push({ kind: "media", ...base, text: "", src: node.src, mediaType: "image" });
-              }
-            } else if (!seenTile.has(node) && snapRe.test(node.textContent || node.getAttribute("aria-label") || "")) {
-              seenTile.add(node);
-              node.setAttribute("data-sb-snap", String(snapIndex));
-              output.push({ kind: "snap", ...base, text: "", snapIndex: snapIndex++ });
-            }
-          }
-        };
-
-        $chatList.querySelectorAll("li.T1yt2").forEach((li) => {
-          const timeElem = li.querySelector("time span");
-          if (timeElem) {
-            currentTime = timeElem.textContent.trim();
-            return;
-          }
-          const blocks = li.querySelectorAll("li");
-          if (blocks.length > 0) {
-            blocks.forEach((block) => {
-              const sender =
-                block.querySelector("header .nonIntl")?.textContent.trim() ||
-                senderFromBorder(block) ||
-                "Unknown";
-              read(sender, block);
-            });
-          } else {
-            read(senderFromBorder(li) || "Unknown", li);
-          }
-        });
-        return output;
-      },
-      chatId,
-      chatName,
-      deletedPattern,
-      snapPattern
-    );
+    // Read only the already rendered conversation. This evaluation does not
+    // click, navigate or make its own request to Snapchat. Opening a chat
+    // beforehand is a separate operation that can emit normal read receipts.
+    return this.page.evaluate(extractVisibleMessages, chatId, chatName, deletedPattern, snapPattern);
   }
 
   // Answers matching requests with an empty gRPC "OK" instead of sending them, at
