@@ -1,33 +1,10 @@
 # Live dashboard: backend on Railway, frontend on Vercel
 
-Like wppconnect-server: the backend keeps Snapchat Web sessions running in
-headless Chrome (one per account) and exposes them over REST + WebSocket. The
-frontend is a live chat dashboard for all your accounts.
+Deploy SnapBot as a **separate Railway service** inside the existing `celebrated-gratitude` project. Keep the existing `COMMNEXUS` (WPPConnect) service and its mounted volume untouched. Use a dedicated `/data` volume for SnapBot's SQLite archive and Chromium profiles.
 
-**By default the dashboard is a live mirror.** It shows what Snapchat is
-currently showing for each account, and when Snapchat removes a message the
-dashboard drops it too. Nothing is archived, no media is downloaded.
+Messages visible to the connected Snapchat account are archived automatically; no preservation code or peer handshake is required. When Snapchat removes content, previously captured messages stay in the private archive with a Deleted or No longer on Snapchat label (without strikethrough). Content not captured while available cannot be recovered. Keeping other people's messages may carry privacy and legal obligations.
 
-**Preservation is opt-in per chat, and needs both sides to consent.** For a chat
-you turn it on for (see below), messages are *kept* instead of lost:
-- A message the other person **deletes** stays, struck through with a 🗑️ and a
-  *Deleted* tag.
-- A message Snapchat **clears** (after viewing, or its disappear timer) stays,
-  marked *No longer on Snapchat*.
-- **Photos, videos and tap-to-view snaps** are saved (to Cloudflare R2 or the
-  data volume) and viewable in the dashboard without a time or view limit.
-- Nothing expires on its own (`MESSAGE_TTL_HOURS=0`). Set it above 0 only if you
-  *want* preserved messages pruned after N hours; deleted ones are always kept.
-
-**Consent handshake.** Preservation only turns on for a chat once both ends opt
-in, so you're never silently keeping someone else's disappearing messages:
-- If the chat's peer is **another account you added here**, it links
-  automatically — both ends are yours.
-- Otherwise the dashboard shows a **code**; the other person types that code into
-  the chat, and *their* reply is their consent. Until then the chat stays a live
-  mirror. Turning preservation off erases what was kept for that chat.
-
-The bot does **not** hide that you've read messages: opening a chat to mirror it
+The bot does **not** hide that you've read messages:
 marks it read on Snapchat, exactly like opening the app yourself.
 
 **Dashboard features:** multiple accounts with status dots and unread badges,
@@ -68,9 +45,9 @@ backend with the same signed-URL scheme (`PUBLIC_URL`, auto-detected on Railway)
 
 ## 1. Backend → Railway
 
-1. New Project → Deploy from GitHub repo → pick this repo (root directory `/`).
+1. Open the **existing `celebrated-gratitude` project** and add a **new service** from `paulomobude-cell/snapbot` (root directory `/`). Deploy the tested feature branch or merge its PR before selecting `main`.
    Railway finds `Dockerfile` and `railway.json` on its own.
-2. **Add a Volume** to the service, mount path `/data`. It holds the Chrome
+2. **Add a new SnapBot-only Volume** to the service, mount path `/data`. Never reuse WPPConnect's existing volume. It holds the Chrome
    profile, so you stay logged in across deploys.
 3. Variables:
    | Name | Value |
@@ -78,11 +55,11 @@ backend with the same signed-URL scheme (`PUBLIC_URL`, auto-detected on Railway)
    | `API_TOKEN` | long random string (required) |
    | `SECRET_KEY` | optional; encrypts remembered passwords (defaults to `API_TOKEN`) |
    | `MAX_ACCOUNTS` | `3` (each account is one Chrome, ~300-500 MB RAM) |
-   | `CORS_ORIGIN` | your Vercel URL, e.g. `https://snapbot.vercel.app` |
+   | `CORS_ORIGIN` | `https://snapbots.comnexus.xyz` |
    | `MESSAGE_TTL_HOURS` | `24` (optional) |
    | `USER_NAME` / `USER_PASSWORD` | optional; creates an account on first boot |
    | `WEBHOOK_URL` | optional, receives every event as a POST |
-4. Settings → Networking → **Generate Domain**. Check `https://<domain>/health`.
+4. Settings → Networking → **Generate Domain** for the backend, then configure the frontend's custom domain `snapbots.comnexus.xyz` separately. Check `https://<domain>/health`.
 
 ## 2. Frontend → Vercel
 
@@ -140,15 +117,8 @@ emits `accounts`, `status`, `chats`, `chat:snapshot`, `message:new`,
 `{ event, data, at }` with `data.accountId` set.
 
 ## Caveats
-- Preservation needs the other side's consent (linked own-account, or the code).
-  It can't technically *prove* the person understood; it records that they took
-  the opt-in action. Use it honestly.
-- The bot reads chats by opening them in Snapchat Web, so the other person sees
-  them as opened, just like opening them yourself. Chats with no new activity are
-  re-checked every `FULL_SYNC_INTERVAL_MS`.
-- Opening a preserved tap-to-view snap marks it viewed on Snapchat (same as if
-  you opened it). Snaps you *sent* are never auto-opened.
-- It depends on Snapchat Web's CSS selectors (last tested on v13.38.0). If
-  Snapchat changes its UI, the selectors in `snapbot.js` need updating; the
-  deleted-notice and snap-tile text can be tuned with `DELETED_NOTICE_PATTERN`
-  and `SNAP_TILE_PATTERN`.
+- Archiving is automatic for messages the logged-in account can access, not a guarantee of recovering expired messages or unopened view-once media.
+- This implementation opens chats in Snapchat Web and can trigger read receipts. Do not advertise it as unread/stealth mode.
+- Each account runs a separate Chromium profile. Sharing tabs across accounts is deferred until profile isolation and resource usage are validated.
+- Keep the API token private, restrict `CORS_ORIGIN`, and take backups of the SnapBot-only `/data` volume.
+- The service depends on Snapchat Web's DOM selectors, which may change.
