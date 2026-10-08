@@ -4,10 +4,10 @@ import SnapBot from "../snapbot.js";
 // Fake the Puppeteer page to regression-test the exact remote chat-click path,
 // without sending anything to Snapchat or running a browser in CI.
 const bot = new SnapBot();
-let root = false, visible = null, titleClicks = 0, rowClicks = 0, waits = 0;
+let root = false, visible = null, titleClicks = 0, rowClicks = 0, waits = 0, allowRow = true;
 const title = {
   click: async () => { titleClicks++; },
-  evaluateHandle: async () => ({ asElement: () => ({ click: async () => { rowClicks++; root=true; visible="c1"; } }) }),
+  evaluateHandle: async () => ({ asElement: () => ({ click: async () => { rowClicks++; if (allowRow) { root=true; visible="c1"; } } }) }),
 };
 bot.page = {
   $: async selector => selector.includes("title-c1") ? title : selector.includes("cv-c1") && root ? {} : null,
@@ -26,7 +26,7 @@ assert.equal(waits,2);
 assert.equal(bot.lastChatOpenReason,null);
 assert.equal(await bot.openChat("c1"),true,"already visible conversation must not get clicked twice");
 assert.equal(titleClicks,1);
-root=false; visible=null;
+root=false; visible=null; allowRow=false;
 bot.page.waitForSelector=async()=>{ throw Error("not yet visible"); };
 assert.equal(await bot.openChat("c1"),false,"should fail safely if neither click opens the requested chat");
 assert.match(bot.lastChatOpenReason,/did not show/);
