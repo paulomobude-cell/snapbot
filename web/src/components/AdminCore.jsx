@@ -40,7 +40,7 @@ export default function AdminCore({ backend, onClose, toast }) {
       setLegacy(info.legacy || []);
       setAudit(actions || []);
       setAuthenticated(true);
-    } catch (e) { setError(e.message); }
+    } catch (e) { setError(e.message); if (/access denied|admin access/i.test(e.message)) setAuthenticated(false); }
     finally { setLoading(false); }
   }, [request]);
 
