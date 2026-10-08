@@ -138,10 +138,8 @@ function Dashboard({ settings, user, onDisconnect }) {
     if (status === "needs_login") setPanel("screen");
   }, [status, accountId]);
 
-  // first run: nothing to show yet, so go straight to adding an account
-  useEffect(() => {
-    if (conn.connected && accounts.length === 0) setModal("add");
-  }, [conn.connected, accounts.length]);
+  // Do not force Add Account when a user signs up: they may need to open
+  // Admin Core and claim an unassigned legacy Snapchat session first.
 
   const totalUnread = useMemo(() => Object.values(state.unread).reduce(
     (sum, chats) => sum + Object.values(chats).reduce((s, ids) => s + ids.length, 0), 0
