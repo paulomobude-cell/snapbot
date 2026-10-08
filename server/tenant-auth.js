@@ -30,6 +30,9 @@ export class TenantAuth {
       getPhone: db.prepare("SELECT * FROM app_users WHERE phone=?"),
       getId: db.prepare("SELECT * FROM app_users WHERE id=?"),
       getKey: db.prepare("SELECT * FROM app_users WHERE api_key_hash=?"),
+      getSession: db.prepare("SELECT u.* FROM user_sessions s JOIN app_users u ON u.id=s.user_id WHERE s.key_hash=?"),
+      addSession: db.prepare("INSERT INTO user_sessions (key_hash, user_id, created_at) VALUES (?, ?, ?)"),
+      clearSessions: db.prepare("DELETE FROM user_sessions WHERE user_id=?"),
       insert: db.prepare("INSERT INTO app_users (id, phone, password_hash, recovery_hash, api_key_hash, role, created_at) VALUES (?, ?, ?, ?, ?, 'user', ?)"),
       rotate: db.prepare("UPDATE app_users SET api_key_hash=?, password_hash=?, recovery_hash=? WHERE id=? AND recovery_hash=?"),
       delete: db.prepare("DELETE FROM app_users WHERE id=?"),
@@ -80,10 +83,10 @@ export class TenantAuth {
     const row = this.sql.getPhone.get(normPhone(phone));
     if (!row || typeof password !== "string" || password.length > 256 ||
       !matchPassword(password, row.password_hash)) this.fail("Invalid phone or password", 401);
-    // Existing key is never stored in plaintext; rotate at login and invalidate
-    // old browser sessions, keeping the stable tenant id unchanged.
+    // New device gets an independent revocable login key without logging out
+    // other devices. Only its SHA-256 hash is persisted.
     const key = apiKey();
-    this.db.prepare("UPDATE app_users SET api_key_hash=? WHERE id=?").run(hash(key), row.id);
+    this.sql.addSession.run(hash(key), row.id, this.now());
     return { user: this.publicUser(row), apiKey: key };
   }
   recover(phone, code, newPassword) {
@@ -95,12 +98,13 @@ export class TenantAuth {
       this.fail("New password must contain 12–256 characters");
     const key = apiKey(), recovery = recoveryCode();
     const result = this.sql.rotate.run(hash(key), passwordHash(newPassword), hash(recovery), row.id, row.recovery_hash);
+    if (result.changes) this.sql.clearSessions.run(row.id);
     if (!result.changes) this.fail("Recovery code already used", 409);
     return { user: this.publicUser(row), apiKey: key, recoveryCode: recovery };
   }
   resolve(key) {
     if (typeof key !== "string" || !/^[a-f0-9]{64}$/i.test(key)) return null;
-    const row = this.sql.getKey.get(hash(key));
+    const row = this.sql.getKey.get(hash(key)) || this.sql.getSession.get(hash(key));
     return row ? this.publicUser(row) : null;
   }
   checkAdmin(candidate) {
