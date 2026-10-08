@@ -7,6 +7,9 @@ on:
     paths:
       - 'snapbot.js'
       - 'server/session.js'
+      - 'server/index.js'
+      - 'server/accounts.js'
+      - 'test/live-screen.mjs'
       - 'test/login.mjs'
       - 'test/preservation.mjs'
       - '.github/workflows/login-regression.yml'
@@ -24,4 +27,5 @@ jobs:
       - run: node --check snapbot.js
       - run: node --check server/session.js
       - run: node test/login.mjs
+      - run: node test/live-screen.mjs
       - run: npm test
