@@ -3,7 +3,7 @@ import { Avatar, Icon } from "../util.jsx";
 import { Empty } from "./ChatList.jsx";
 import { group } from "../message-groups.js";
 
-export default function Conversation({ chat, status, messages, now, onBack, onSend, onCopy, onOpenScreen, onInteractiveSync, toast }) {
+export default function Conversation({ chat, status, messages, now, onBack, onSend, onCopy, onOpenScreen, onInteractiveSync, onBackfill, toast }) {
   const [pending, setPending] = useState([]);
   const [syncing, setSyncing] = useState(false); // optimistic sends
   const listRef = useRef(null);
@@ -83,7 +83,9 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
         }}
       >
         {messages.length === 0 && pending.length === 0 && (
-          <Empty icon="message" title="No messages" text={preserved ? "Nothing here yet. New messages — and anything the other side deletes — will be kept." : "Nothing here right now."} />
+          <Empty icon="message" title="No archived messages yet"
+            text="Passive mode only saves conversations already visible in Snapchat Web. A fresh account has no history until you open a chat in Live Screen or explicitly archive selected chats."
+          ><button className="btn small" onClick={onBackfill}>Choose chats to archive</button></Empty>
         )}
         {groups.map((g) => (
           <div key={g.key}>
