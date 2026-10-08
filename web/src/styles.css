@@ -399,7 +399,7 @@ input[type="checkbox"] { width: auto; accent-color: var(--me); }
 .bubble-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .bubble-row.deleted .bubble { border-left-color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--bubble-them)); }
 .group.me .bubble-row.deleted .bubble { border-right-color: var(--danger); }
-.bubble-row.deleted .bubble-text { text-decoration: line-through; text-decoration-color: var(--danger); opacity: 0.85; }
+.bubble-row.deleted .bubble-text { text-decoration: none; opacity: 1; }
 .bubble-row.gone .bubble { opacity: 0.8; border-left-style: dashed; }
 .gone-tag {
   display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 700;
