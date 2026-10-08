@@ -112,6 +112,11 @@ app.post("/api/auth/key-login", authAction("key", (p) => {
   if (!user) tenantAuth.fail("Invalid account key", 401);
   return { user, apiKey: p.apiKey };
 }));
+app.post("/api/auth/logout", (req, res) => {
+  if (!tenantAuth.revoke(bearer(req))) return res.status(401).json({ error: "Sign in required" });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ loggedOut: true });
+});
 app.get("/api/auth/me", (req, res) => {
   const user = tenantAuth.resolve(bearer(req));
   res.setHeader("Cache-Control", "no-store");
