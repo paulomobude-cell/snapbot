@@ -9,8 +9,10 @@ import ActivityPanel from "./components/ActivityPanel.jsx";
 import AddAccount from "./components/AddAccount.jsx";
 import AccountSettings from "./components/AccountSettings.jsx";
 import Toasts, { useToasts } from "./components/Toasts.jsx";
+import AuthPortal from "./components/AuthPortal.jsx";
+import AdminCore from "./components/AdminCore.jsx";
 
-const DEFAULT_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
+const DEFAULT_URL = (import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:3001" : "")).replace(/\/+$/, "");
 
 function load(key, fallback) {
   try {
@@ -39,60 +41,65 @@ export function useTheme() {
 }
 
 export default function App() {
-  const [settings, setSettings] = useState(() => load("snapbot", null));
+  const [session, setSession] = useState(() => load("snapbot:session", null));
+  const [checked, setChecked] = useState(false);
   useTheme();
-  if (!settings) {
-    return <Setup onSave={(s) => { save("snapbot", s); setSettings(s); }} />;
-  }
-  return <Dashboard settings={settings} onDisconnect={() => { save("snapbot", null); setSettings(null); }} />;
+
+  // Remove the old global service credential from browser storage. It must
+  // never be used for multi-user authentication.
+  useEffect(() => { save("snapbot", null); }, []);
+  useEffect(() => {
+    if (!session?.apiKey || !DEFAULT_URL) {
+      setChecked(true);
+      return;
+    }
+    let active = true;
+    setChecked(false);
+    fetch(DEFAULT_URL + "/api/auth/me", {
+      headers: { Authorization: "Bearer " + session.apiKey }, cache: "no-store",
+    }).then(async response => {
+      if (response.status === 401) {
+        if (active) { save("snapbot:session", null); setSession(null); }
+        return;
+      }
+      // Temporary backend outages must not silently destroy saved login keys.
+      if (!response.ok) return;
+      const data = await response.json();
+      if (active && data.user?.id !== session.user?.id) {
+        save("snapbot:session", null);
+        setSession(null);
+      }
+    }).catch(() => {}).finally(() => { if (active) setChecked(true); });
+    return () => { active = false; };
+  }, [session?.apiKey]);
+
+  const settings = useMemo(() => session?.apiKey ? {
+    url: DEFAULT_URL, token: session.apiKey,
+  } : null, [session?.apiKey]);
+
+  const onSignedIn = (credentials) => {
+    const s = { apiKey: credentials.apiKey, user: credentials.user };
+    save("snapbot:session", s);
+    setSession(s);
+  };
+  const signOut = () => {
+    save("snapbot:session", null);
+    save("snapbot:view", null);
+    save("snapbot:unread", null);
+    setSession(null);
+  };
+  if (!checked) return <div className="setup"><div className="card setup-card"><span className="spinner" /> Checking Comnexus account…</div></div>;
+  if (!session || !settings) return <AuthPortal backend={DEFAULT_URL} onSignedIn={onSignedIn} />;
+  return <Dashboard settings={settings} user={session.user} onDisconnect={signOut} />;
 }
 
-function Setup({ onSave }) {
-  const [url, setUrl] = useState(DEFAULT_URL);
-  const [token, setToken] = useState("");
-  const [checking, setChecking] = useState(false);
-  const [error, setError] = useState("");
-  return (
-    <div className="setup">
-      <form className="card setup-card" onSubmit={async (e) => {
-        e.preventDefault();
-        const clean = url.trim().replace(/\/+$/, "");
-        setChecking(true);
-        setError("");
-        try {
-          const res = await fetch(`${clean}/api/accounts`, { headers: { Authorization: `Bearer ${token}` } });
-          if (res.status === 401) throw new Error("Wrong API token");
-          if (!res.ok) throw new Error(`Backend answered ${res.status}`);
-          onSave({ url: clean, token });
-        } catch (err) {
-          setError(err.message === "Failed to fetch" ? "Can't reach the backend (URL or CORS_ORIGIN?)" : err.message);
-        } finally {
-          setChecking(false);
-        }
-      }}>
-        <div className="brand"><span className="logo">👻</span> SnapBot</div>
-        <p className="muted">Connect to your SnapBot backend.</p>
-        <label className="field">
-          <span>Backend URL</span>
-          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://your-app.up.railway.app" required />
-        </label>
-        <label className="field">
-          <span>API token</span>
-          <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="API_TOKEN from Railway" required autoFocus />
-        </label>
-        {error && <div className="alert">{error}</div>}
-        <button className="btn primary" disabled={checking}>{checking ? "Checking…" : "Connect"}</button>
-      </form>
-    </div>
-  );
-}
-
-function Dashboard({ settings, onDisconnect }) {
+function Dashboard({ settings, user, onDisconnect }) {
   const { toasts, toast, dismiss } = useToasts();
   const [notify, setNotify] = useState(() => load("snapbot:notify", false));
   const [view, setViewState] = useState(() => load("snapbot:view", { accountId: null, chatId: null }));
   const [panel, setPanel] = useState(null); // null | "screen" | "activity"
   const [modal, setModal] = useState(null); // null | "add" | "settings"
+  const [adminOpen, setAdminOpen] = useState(false);
   const [theme, setTheme] = useTheme();
 
   const onMessage = useCallback((accountId, message) => {
@@ -197,6 +204,8 @@ function Dashboard({ settings, onDisconnect }) {
             <button className={`icon-btn ${panel === "screen" ? "on" : ""}`} title="Live screen" onClick={() => setPanel(panel === "screen" ? null : "screen")}><Icon name="screen" /></button>
             <button className={`icon-btn ${panel === "activity" ? "on" : ""}`} title="Activity" onClick={() => setPanel(panel === "activity" ? null : "activity")}><Icon name="activity" /></button>
             <button className={`icon-btn ${notify ? "on" : ""}`} title={notify ? "Notifications on" : "Notifications off"} onClick={toggleNotify}><Icon name="bell" /></button>
+            <button className="icon-btn" title="Comnexus Admin Core" aria-label="Comnexus Admin Core" onClick={() => setAdminOpen(true)}><Icon name="shield" /></button>
+            <button className="icon-btn" title="Sign out of Comnexus" aria-label="Sign out of Comnexus" onClick={onDisconnect}><Icon name="logout" /></button>
             <button className="icon-btn" title="Theme" onClick={() => setTheme(theme === "dark" ? "light" : theme === "light" ? "system" : "dark")}>
               <Icon name={theme === "dark" ? "moon" : "sun"} />
             </button>
@@ -245,8 +254,8 @@ function Dashboard({ settings, onDisconnect }) {
 
       {!conn.connected && (
         <div className="conn-banner">
-          <span className="spinner" /> {conn.error === "Unauthorized" ? "API token rejected" : conn.error ? `Can't reach backend: ${conn.error}` : "Reconnecting…"}
-          <button className="btn small" onClick={onDisconnect}>Change backend</button>
+          <span className="spinner" /> {conn.error === "Unauthorized" ? "Comnexus account rejected" : conn.error ? `Can't reach backend: ${conn.error}` : "Reconnecting…"}
+          <button className="btn small" onClick={onDisconnect}>Sign out</button>
         </div>
       )}
 
@@ -278,6 +287,7 @@ function Dashboard({ settings, onDisconnect }) {
         />
       )}
 
+      {adminOpen && <AdminCore backend={settings.url} onClose={() => setAdminOpen(false)} toast={toast} />}
       <Toasts toasts={toasts} onDismiss={dismiss} />
     </div>
   );
