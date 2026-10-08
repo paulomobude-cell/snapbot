@@ -51,6 +51,9 @@ export default function AuthPortal({ backend, onSignedIn }) {
         <p className="muted">This one-time code is required to reset your password. Store it privately; it is not shown again.</p>
         <output className="recovery-output">{confirmation}</output>
         <button type="button" className="btn" onClick={() => navigator.clipboard?.writeText(confirmation)}>Copy recovery code</button>
+        <p className="muted small">Your personal Comnexus API key is separate from the server's master token. Treat it like a password; you can use it to sign in again.</p>
+        <output className="recovery-output">{pendingSession.apiKey}</output>
+        <button type="button" className="btn" onClick={() => navigator.clipboard?.writeText(pendingSession.apiKey)}>Copy personal API key</button>
         <button type="button" className="btn primary" onClick={() => onSignedIn(pendingSession)}>
           I've saved my recovery code
         </button>
