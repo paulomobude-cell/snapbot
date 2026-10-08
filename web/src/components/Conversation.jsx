@@ -150,6 +150,13 @@ function Bubble({ m, onCopy }) {
   return (
     <div className={`bubble-row ${deleted ? "deleted" : ""} ${gone ? "gone" : ""}`}>
       <div className="bubble" title={`Seen ${new Date(m.firstSeenAt).toLocaleString()}`}>
+        {m.replyTo && (
+          <div className="reply-preview" aria-label="Quoted message">
+            <span className="reply-preview-from">{m.replyTo.from || "Original message"}</span>
+            {m.replyTo.text && <span className="reply-preview-text">{m.replyTo.text}</span>}
+            {m.replyTo.mediaType && <span className="reply-preview-media">Quoted {m.replyTo.mediaType}</span>}
+          </div>
+        )}
         {media && <MediaView media={media} />}
         {m.kind === "snap" && !media && <span className="snap-tag">👻 Snap</span>}
         {m.text && <span className="bubble-text">{deleted ? m.display : m.text}</span>}
