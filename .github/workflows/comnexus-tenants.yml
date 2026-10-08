@@ -17,6 +17,7 @@ jobs:
       - run: npm ci
       - run: node --check server/index.js
       - run: node --check server/tenant-auth.js
+      - run: node test/mirror-cleanup.mjs
       - run: node test/tenant-auth.mjs
       - run: npm test
       - run: node test/login.mjs
