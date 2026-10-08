@@ -3,7 +3,7 @@ import { Avatar, Icon } from "../util.jsx";
 import { Empty } from "./ChatList.jsx";
 import { group } from "../message-groups.js";
 
-export default function Conversation({ chat, status, messages, now, onBack, onSend, onCopy, onOpenScreen, onInteractiveSync, onBackfill, toast }) {
+export default function Conversation({ chat, status, messages, now, onBack, onSend, onCopy, onOpenScreen, onInteractiveSync, onBackfill, clickMode, toast }) {
   const [pending, setPending] = useState([]);
   const [syncing, setSyncing] = useState(false); // optimistic sends
   const listRef = useRef(null);
@@ -61,7 +61,11 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
 
 
       <div className="passive-controls">
-        <span className="muted small">Passive mode · selecting a chat doesn't open it in Snapchat.</span>
+        <span className="muted small">{clickMode === "open"
+          ? "Click-to-sync on · selecting a chat opens Snapchat and may mark it read."
+          : clickMode === "ask"
+            ? "Chat click mode unset · first chat click will ask whether to open Snapchat."
+            : "Passive mode · selecting a chat doesn't open it in Snapchat."}</span>
         <button className="btn small" disabled={syncing || offline} onClick={async () => {
           if (!window.confirm("Open this conversation in Snapchat to sync? Snapchat may mark messages as read. Continue?")) return;
           setSyncing(true);

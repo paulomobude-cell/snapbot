@@ -594,3 +594,7 @@ video.media { cursor: default; }
 .backfill-chat strong { overflow-wrap: anywhere; }
 .backfill-progress { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 11px; }
 .backfill-confirm { align-items: flex-start; line-height: 1.5; }
+
+/* Explicitly acknowledged chat-click read behavior; passive remains available. */
+.click-mode-toggle { white-space: nowrap; border: 1px solid var(--border); font-size: 11px; }
+.click-mode-toggle.on { border-color: var(--accent); }

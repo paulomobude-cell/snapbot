@@ -869,11 +869,15 @@ export default class SnapBot {
       const el = choices.sort((a, b) => b.clientHeight - a.clientHeight)[0];
       if (!el) return { available: false, moved: false, atTop: false };
       const before = el.scrollTop;
-      if (action === "older") el.scrollTop = Math.max(0, before - Math.max(110, Math.floor(el.clientHeight * .72)));
-      if (action === "restore") el.scrollTop = Math.max(0, Number(position) || 0);
+      const max = Math.max(0, el.scrollHeight - el.clientHeight);
+      const reverse = getComputedStyle(el).flexDirection === "column-reverse"
+        || getComputedStyle(el.firstElementChild || el).flexDirection === "column-reverse";
+      const minTop = reverse ? -max : 0;
+      if (action === "older") el.scrollTop = Math.max(minTop, before - Math.max(110, Math.floor(el.clientHeight * .72)));
+      if (action === "restore") el.scrollTop = Number(position) || 0;
       const after = el.scrollTop;
       return { available: true, moved: action === "older" && after < before - 1,
-        atTop: after <= 2, scrollTop: after, scrollHeight: el.scrollHeight };
+        atTop: after <= minTop + 2, scrollTop: after, scrollHeight: el.scrollHeight };
     }, chatId, action, position);
   }
 
