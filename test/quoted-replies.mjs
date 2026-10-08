@@ -42,6 +42,8 @@ function node(tag, {text="", classes=[], sender=null, quote=false, media=null, l
       if(selector==="li.T1yt2") return all.filter(x=>x._messageRow);
       if(selector==="li") return all.filter(x=>x.tagName==="LI");
       if(selector==="img, video") return all.filter(x=>x.tagName==="IMG"||x.tagName==="VIDEO");
+      if(selector==="img") return all.filter(x=>x.tagName==="IMG");
+      if(selector==="video") return all.filter(x=>x.tagName==="VIDEO");
       if(selector.startsWith("img, video")) return all.filter(x=>x.tagName==="IMG"||x.tagName==="VIDEO");
       if(selector.startsWith("span.ogn1z")) return all.filter(x=>(x.tagName==="SPAN" && x._legacy) || x.tagName==="IMG"||x.tagName==="VIDEO");
       return [];
