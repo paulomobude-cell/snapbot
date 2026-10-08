@@ -18,8 +18,7 @@ const config = {
   secretKey: env.SECRET_KEY || env.API_TOKEN || "",
   corsOrigin: env.CORS_ORIGIN ? env.CORS_ORIGIN.split(",").map((o) => o.trim()) : "*",
   dataDir: env.DATA_DIR || (fs.existsSync("/data") ? "/data" : "./data"),
-  // 0 = keep preserved messages forever (the point of preservation). Only applies
-  // to consented, preserved chats; un-preserved chats are mirror-only anyway.
+  // 0 = keep archived messages until explicitly deleted.
   ttlMs: Number(env.MESSAGE_TTL_HOURS || 0) * 60 * 60 * 1000,
   syncIntervalMs: Number(env.SYNC_INTERVAL_MS || 4000),
   fullSyncIntervalMs: Number(env.FULL_SYNC_INTERVAL_MS || 60000),
@@ -131,14 +130,6 @@ app.post("/api/accounts/:id/chats/:chatId/messages", handle(async (req) => {
   if (!text) throw new Error("text required");
   await session(req).sendMessage(req.params.chatId, text);
 }));
-// consent handshake (preservation is off until both sides opt in)
-app.get("/api/accounts/:id/pairs", handle((req) => accounts.pairs(req.params.id)));
-app.post("/api/accounts/:id/chats/:chatId/handshake", handle((req) =>
-  accounts.requestHandshake(req.params.id, req.params.chatId)
-));
-app.delete("/api/accounts/:id/chats/:chatId/handshake", handle((req) =>
-  accounts.revokeHandshake(req.params.id, req.params.chatId)
-));
 app.get("/api/accounts/:id/screen", async (req, res) => {
   const image = await Promise.resolve().then(() => session(req).screenshot()).catch(() => null);
   if (!image) return res.status(404).end();
