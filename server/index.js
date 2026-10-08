@@ -8,15 +8,19 @@ import cors from "cors";
 import { Server } from "socket.io";
 import { openDb, createCipher } from "./db.js";
 import AccountManager from "./accounts.js";
+import MediaStorage from "./media.js";
 
 const env = process.env;
+const list = (v) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : []);
 const config = {
   port: Number(env.PORT || 3001),
   apiToken: env.API_TOKEN || "",
   secretKey: env.SECRET_KEY || env.API_TOKEN || "",
   corsOrigin: env.CORS_ORIGIN ? env.CORS_ORIGIN.split(",").map((o) => o.trim()) : "*",
   dataDir: env.DATA_DIR || (fs.existsSync("/data") ? "/data" : "./data"),
-  ttlMs: Number(env.MESSAGE_TTL_HOURS || 24) * 60 * 60 * 1000,
+  // 0 = keep preserved messages forever (the point of preservation). Only applies
+  // to consented, preserved chats; un-preserved chats are mirror-only anyway.
+  ttlMs: Number(env.MESSAGE_TTL_HOURS || 0) * 60 * 60 * 1000,
   syncIntervalMs: Number(env.SYNC_INTERVAL_MS || 4000),
   fullSyncIntervalMs: Number(env.FULL_SYNC_INTERVAL_MS || 60000),
   maxAccounts: Number(env.MAX_ACCOUNTS || 3),
@@ -24,9 +28,27 @@ const config = {
   chromePath: env.PUPPETEER_EXECUTABLE_PATH,
   username: env.USER_NAME,
   password: env.USER_PASSWORD,
-  blockTyping: env.BLOCK_TYPING === "true",
   webhookUrl: env.WEBHOOK_URL,
   mock: env.MOCK === "true",
+  // Requests the browser answers locally instead of sending. Empty by default:
+  // the bot opens chats to mirror them and lets normal read receipts go through,
+  // like an ordinary client. (Not used to hide reads.)
+  blockedRequests: list(env.BLOCKED_REQUESTS),
+  // media capture, for consented pairs only
+  captureSnaps: env.CAPTURE_SNAPS !== "false",
+  snapsPerSync: Number(env.SNAPS_PER_SYNC || 3),
+  mediaUrlTtl: Number(env.MEDIA_URL_TTL_SECONDS || 6 * 3600),
+  publicUrl: (env.PUBLIC_URL || (env.RAILWAY_PUBLIC_DOMAIN ? `https://${env.RAILWAY_PUBLIC_DOMAIN}` : "")).replace(/\/+$/, ""),
+  r2: {
+    accountId: env.R2_ACCOUNT_ID,
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    bucket: env.R2_BUCKET,
+  },
+  patterns: {
+    ...(env.DELETED_NOTICE_PATTERN && { deletedPattern: env.DELETED_NOTICE_PATTERN }),
+    ...(env.SNAP_TILE_PATTERN && { snapPattern: env.SNAP_TILE_PATTERN }),
+  },
 };
 
 if (!config.apiToken) {
@@ -36,10 +58,12 @@ if (!config.apiToken) {
 fs.mkdirSync(config.dataDir, { recursive: true });
 
 const db = openDb(config.dataDir);
+const media = new MediaStorage({ ...config, publicUrl: config.publicUrl || `http://localhost:${config.port}` });
 const BotClass = config.mock ? (await import("./mockBot.js")).default : undefined;
 const accounts = new AccountManager({
   db,
   cipher: createCipher(config.secretKey),
+  media,
   config,
   BotClass,
 });
@@ -97,16 +121,40 @@ app.post("/api/accounts/:id/logout", handle((req) => session(req).logout()));
 app.post("/api/accounts/:id/login", handle((req) => accounts.login(req.params.id, req.body || {})));
 app.get("/api/accounts/:id/events", handle((req) => accounts.events(req.params.id)));
 app.get("/api/accounts/:id/chats", handle((req) => accounts.chatsWithPreviews(req.params.id)));
-app.get("/api/accounts/:id/chats/:chatId/messages", handle((req) => store(req).getMessages(req.params.chatId)));
+app.get("/api/accounts/:id/chats/:chatId/messages", handle((req) =>
+  accounts.messages(req.params.id, req.params.chatId, {
+    beforeOrd: req.query.before ? Number(req.query.before) : Infinity,
+  })
+));
 app.post("/api/accounts/:id/chats/:chatId/messages", handle(async (req) => {
   const text = String(req.body?.text || "").trim();
   if (!text) throw new Error("text required");
   await session(req).sendMessage(req.params.chatId, text);
 }));
+// consent handshake (preservation is off until both sides opt in)
+app.get("/api/accounts/:id/pairs", handle((req) => accounts.pairs(req.params.id)));
+app.post("/api/accounts/:id/chats/:chatId/handshake", handle((req) =>
+  accounts.requestHandshake(req.params.id, req.params.chatId)
+));
+app.delete("/api/accounts/:id/chats/:chatId/handshake", handle((req) =>
+  accounts.revokeHandshake(req.params.id, req.params.chatId)
+));
 app.get("/api/accounts/:id/screen", async (req, res) => {
   const image = await Promise.resolve().then(() => session(req).screenshot()).catch(() => null);
   if (!image) return res.status(404).end();
   res.type("jpeg").send(image);
+});
+
+// signed, short-lived links for media kept on the local volume (R2 signs its own)
+app.get(/^\/media\/(.+)$/, (req, res) => {
+  if (media.kind !== "local") return res.status(404).end();
+  const key = req.params[0].split("/").map(decodeURIComponent).join("/");
+  if (!media.verify(key, req.query.exp, req.query.sig)) return res.status(403).end();
+  try {
+    res.sendFile(media.localPath(key));
+  } catch {
+    res.status(404).end();
+  }
 });
 
 // ---- WebSocket ----
@@ -138,6 +186,7 @@ io.on("connection", (socket) => {
     const { session } = entry(p);
     socket.emit("status", { accountId: p.accountId, ...session.getStatus() });
     socket.emit("chats", { accountId: p.accountId, chats: accounts.chatsWithPreviews(p.accountId) });
+    socket.emit("pairs", { accountId: p.accountId, pairs: accounts.pairs(p.accountId) });
     socket.emit("activity:list", { accountId: p.accountId, events: accounts.events(p.accountId) });
   }));
   socket.on("account:create", ack((p) => accounts.create(p)));
@@ -149,18 +198,19 @@ io.on("connection", (socket) => {
   socket.on("account:logout", ack((p) => entry(p).session.logout()));
 
   socket.on("chat:select", ack(async (p) => {
-    const { session, store } = entry(p);
     socket.emit("chat:snapshot", {
       accountId: p.accountId,
       chatId: p.chatId,
-      messages: store.getMessages(p.chatId),
+      messages: await accounts.messages(p.accountId, p.chatId),
     });
-    await session.selectChat(p.chatId);
+    await entry(p).session.selectChat(p.chatId);
   }));
   socket.on("message:send", ack((p) => {
     if (!p.text?.trim()) throw new Error("text required");
     return entry(p).session.sendMessage(p.chatId, p.text.trim());
   }));
+  socket.on("pair:request", ack((p) => accounts.requestHandshake(p.accountId, p.chatId)));
+  socket.on("pair:revoke", ack((p) => accounts.revokeHandshake(p.accountId, p.chatId)));
 
   // live screen: one watched account per socket
   let watching = null;
@@ -202,10 +252,10 @@ accounts.on("accounts", (list) => io.emit("accounts", list));
 accounts.on("screen:frame", ({ accountId, frame }) =>
   io.to(`screen:${accountId}`).volatile.emit("screen:frame", { accountId, frame })
 );
-for (const event of ["chats", "chat:snapshot", "activity"]) {
+for (const event of ["chats", "chat:snapshot", "activity", "pairs"]) {
   accounts.on(event, (data) => io.emit(event, data));
 }
-for (const event of ["status", "message:new", "message:deleted", "message:expired"]) {
+for (const event of ["status", "message:new", "message:updated", "message:removed"]) {
   accounts.on(event, (data) => {
     io.emit(event, data);
     webhook(event, data);
@@ -216,6 +266,7 @@ setInterval(() => accounts.sweep(), 15000);
 
 server.listen(config.port, () => {
   console.log(`SnapBot server on :${config.port} (data: ${config.dataDir}${config.mock ? ", MOCK" : ""})`);
+  console.log(`Media storage: ${media.kind === "r2" ? "Cloudflare R2" : "local volume"}`);
   accounts.startAll();
 });
 

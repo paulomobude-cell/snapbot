@@ -57,6 +57,7 @@ const paths = {
   lock: "M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4",
   plug: "M18.4 6.6a9 9 0 1 1-12.8 0M12 2v10",
   message: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
+  shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
 };
 
 export function Icon({ name, size = 18 }) {

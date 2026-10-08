@@ -1,30 +1,28 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Avatar, Icon, timeLeft } from "../util.jsx";
+import { Avatar, Icon } from "../util.jsx";
 import { Empty } from "./ChatList.jsx";
 
-export default function Conversation({ chat, status, messages, ttlMs, now, onBack, onSend, onCopy, onOpenScreen }) {
+export default function Conversation({ chat, status, messages, now, onBack, onSend, onCopy, onOpenScreen, onPreserve, onRevoke, toast }) {
   const [pending, setPending] = useState([]); // optimistic sends
   const listRef = useRef(null);
   const [atBottom, setAtBottom] = useState(true);
   const [missed, setMissed] = useState(0);
   const lastCount = useRef(0);
 
-  const visible = messages.filter((m) => !m.leavingAt).length;
-
-  // stick to the bottom unless the user scrolled up; count what they missed
   useLayoutEffect(() => {
     const el = listRef.current;
     if (!el) return;
-    const grew = visible + pending.length > lastCount.current;
+    const total = messages.length + pending.length;
+    const grew = total > lastCount.current;
     if (atBottom) el.scrollTop = el.scrollHeight;
-    else if (grew) setMissed((n) => n + (visible + pending.length - lastCount.current));
-    lastCount.current = visible + pending.length;
-  }, [visible, pending.length]);
+    else if (grew) setMissed((n) => n + (total - lastCount.current));
+    lastCount.current = total;
+  }, [messages.length, pending.length]);
 
   if (!chat) {
     return (
       <main className="conversation empty-state">
-        <Empty icon="message" title="Pick a chat" text="Messages here mirror Snapchat: deleted chats vanish and everything disappears after 24h." />
+        <Empty icon="message" title="Pick a chat" text="This mirrors Snapchat live. Turn on preservation for a chat to keep its messages — including deleted and disappearing ones — instead of losing them." />
       </main>
     );
   }
@@ -42,8 +40,8 @@ export default function Conversation({ chat, status, messages, ttlMs, now, onBac
   };
 
   const groups = group(messages);
-  const live = messages.filter((m) => !m.leavingAt);
   const offline = status !== "connected";
+  const preserved = chat.preservation?.status === "authorized";
 
   return (
     <main className="conversation">
@@ -53,10 +51,12 @@ export default function Conversation({ chat, status, messages, ttlMs, now, onBac
         <div className="convo-title">
           <strong>{chat.name} {chat.status?.streak && <span className="streak">{chat.status.streak}</span>}</strong>
           <span className="muted small">
-            {live.length} message{live.length === 1 ? "" : "s"} · disappear {ttlMs >= 3600000 ? `${Math.round(ttlMs / 3600000)}h` : `${Math.round(ttlMs / 60000)}m`} after arriving
+            {messages.length} message{messages.length === 1 ? "" : "s"} · {preserved ? "preserved" : "live mirror"}
           </span>
         </div>
       </header>
+
+      <Preservation chat={chat} onPreserve={onPreserve} onRevoke={onRevoke} onCopy={onCopy} toast={toast} />
 
       <div
         className="messages"
@@ -69,7 +69,7 @@ export default function Conversation({ chat, status, messages, ttlMs, now, onBac
         }}
       >
         {messages.length === 0 && pending.length === 0 && (
-          <Empty icon="clock" title="No messages" text="Nothing here right now. Deleted and expired messages are removed automatically." />
+          <Empty icon="message" title="No messages" text={preserved ? "Nothing here yet. New messages — and anything the other side deletes — will be kept." : "Nothing here right now."} />
         )}
         {groups.map((g) => (
           <div key={g.key}>
@@ -77,7 +77,7 @@ export default function Conversation({ chat, status, messages, ttlMs, now, onBac
             <div className={`group ${g.isMe ? "me" : "them"}`}>
               {!g.isMe && <div className="group-from">{g.from}</div>}
               {g.messages.map((m) => (
-                <Bubble key={m.id} m={m} now={now} ttlMs={ttlMs} onCopy={onCopy} />
+                <Bubble key={m.uid} m={m} onCopy={onCopy} />
               ))}
             </div>
           </div>
@@ -91,11 +91,8 @@ export default function Conversation({ chat, status, messages, ttlMs, now, onBac
                   {p.state === "sending" ? "Sending…" : (
                     <>
                       <span className="danger">Failed: {p.error}</span>
-                      <button className="link" onClick={() => {
-                        setPending((list) => list.filter((x) => x.tempId !== p.tempId));
-                        send(p.text);
-                      }}>Retry</button>
-                      <button className="link" onClick={() => setPending((list) => list.filter((x) => x.tempId !== p.tempId))}>Discard</button>
+                      <button className="link" onClick={() => { setPending((l) => l.filter((x) => x.tempId !== p.tempId)); send(p.text); }}>Retry</button>
+                      <button className="link" onClick={() => setPending((l) => l.filter((x) => x.tempId !== p.tempId))}>Discard</button>
                     </>
                   )}
                 </div>
@@ -106,10 +103,7 @@ export default function Conversation({ chat, status, messages, ttlMs, now, onBac
       </div>
 
       {!atBottom && (
-        <button className="jump" onClick={() => {
-          listRef.current.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
-          setMissed(0);
-        }}>
+        <button className="jump" onClick={() => { listRef.current.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" }); setMissed(0); }}>
           <Icon name="down" size={16} /> {missed > 0 ? `${missed} new` : "Latest"}
         </button>
       )}
@@ -126,23 +120,87 @@ export default function Conversation({ chat, status, messages, ttlMs, now, onBac
   );
 }
 
-function Bubble({ m, now, ttlMs, onCopy }) {
-  const left = m.expiresAt - now;
-  const fraction = Math.max(0, Math.min(1, left / ttlMs));
-  const leaving = m.leavingAt ? `leaving ${m.leaveReason}` : "";
+function Bubble({ m, onCopy }) {
+  const deleted = m.state === "deleted";
+  const gone = m.state === "gone";
+  const media = m.media?.[0];
   return (
-    <div className={`bubble-row ${leaving} ${left < 3600 * 1000 ? "soon" : ""}`}>
+    <div className={`bubble-row ${deleted ? "deleted" : ""} ${gone ? "gone" : ""}`}>
       <div className="bubble" title={`Seen ${new Date(m.firstSeenAt).toLocaleString()}`}>
-        {m.text}
-        {m.leavingAt && <span className="gone-tag">{m.leaveReason === "deleted" ? "Deleted" : "Expired"}</span>}
+        {media && <MediaView media={media} />}
+        {m.kind === "snap" && !media && <span className="snap-tag">👻 Snap{m.state === "live" ? " (not preserved)" : ""}</span>}
+        {m.text && <span className="bubble-text">{deleted ? m.display : m.text}</span>}
+        {deleted && <span className="gone-tag del">Deleted</span>}
+        {gone && <span className="gone-tag">No longer on Snapchat</span>}
       </div>
       <div className="bubble-meta">
-        <span className="ttl" style={{ "--f": fraction }} aria-hidden="true" />
-        <span>{m.leavingAt ? (m.leaveReason === "deleted" ? "Deleted on Snapchat" : "Disappeared") : `Disappears in ${timeLeft(left)}`}</span>
-        {!m.leavingAt && (
-          <button className="icon-btn tiny hover-only" title="Copy" onClick={() => onCopy(m.text)}><Icon name="copy" size={13} /></button>
-        )}
+        <span>{deleted ? "Deleted on Snapchat · kept here" : gone ? "Removed on Snapchat · kept here" : m.time}</span>
+        {m.text && <button className="icon-btn tiny hover-only" title="Copy" onClick={() => onCopy(m.text)}><Icon name="copy" size={13} /></button>}
       </div>
+    </div>
+  );
+}
+
+function MediaView({ media }) {
+  const [open, setOpen] = useState(false);
+  if (media.status === "pending") return <span className="media-chip">Saving {media.viewOnce ? "snap" : "media"}…</span>;
+  if (media.status === "failed" || !media.url) return <span className="media-chip failed">Couldn't save {media.viewOnce ? "snap" : "media"}</span>;
+  const el = media.kind === "video"
+    ? <video src={media.url} controls className="media" />
+    : <img src={media.url} className="media" alt="" loading="lazy" onClick={() => setOpen(true)} />;
+  return (
+    <div className={`media-wrap ${media.viewOnce ? "once" : ""}`}>
+      {media.viewOnce && <span className="once-badge">👻 view-once</span>}
+      {el}
+      {open && media.kind !== "video" && (
+        <div className="lightbox" onClick={() => setOpen(false)}><img src={media.url} alt="" /></div>
+      )}
+    </div>
+  );
+}
+
+function Preservation({ chat, onPreserve, onRevoke, onCopy }) {
+  const p = chat.preservation || { status: "none" };
+  const [code, setCode] = useState(null);
+  const [busy, setBusy] = useState(false);
+  // reset local code when switching chats
+  useEffect(() => setCode(null), [chat.id]);
+
+  if (p.status === "authorized") {
+    return (
+      <div className="preserve on">
+        <Icon name="lock" size={14} />
+        <span>Preserving this chat{p.method === "linked" ? " (your linked account)" : ""} — deleted and disappearing messages are kept.</span>
+        <button className="link" onClick={() => { if (confirm("Turn off preservation? The kept copies of deleted/expired messages for this chat will be erased.")) onRevoke(); }}>Turn off</button>
+      </div>
+    );
+  }
+  const shownCode = code || (p.status === "pending" ? p.code : null);
+  if (shownCode) {
+    return (
+      <div className="preserve pending">
+        <Icon name="clock" size={14} />
+        <span>Ask the other account to send this code in the chat to confirm it's OK to keep messages:</span>
+        <code className="handcode" title="Copy" onClick={() => onCopy(shownCode)}>{shownCode}</code>
+        <button className="link" onClick={() => { onRevoke(); setCode(null); }}>Cancel</button>
+      </div>
+    );
+  }
+  return (
+    <div className="preserve off">
+      <Icon name="shield" size={14} />
+      <span>Live mirror only — nothing here is kept once Snapchat removes it.</span>
+      <button className="btn small" disabled={busy} onClick={async () => {
+        setBusy(true);
+        try {
+          const pair = await onPreserve();
+          if (pair?.status === "pending") setCode(pair.code);
+        } catch {
+          // toast handled upstream
+        } finally {
+          setBusy(false);
+        }
+      }}>Preserve this chat</button>
     </div>
   );
 }
@@ -172,10 +230,7 @@ function Composer({ onSend }) {
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            submit();
-          }
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
         }}
         placeholder="Send a chat  (Shift+Enter for a new line)"
         aria-label="Message"
@@ -193,7 +248,7 @@ function group(messages) {
     const prev = out[out.length - 1];
     const newTime = m.time && m.time !== lastTime;
     if (!prev || prev.from !== m.from || newTime) {
-      out.push({ key: m.id, from: m.from, isMe: m.isMe, time: newTime ? m.time : null, messages: [m] });
+      out.push({ key: m.uid, from: m.from, isMe: m.isMe, time: newTime ? m.time : null, messages: [m] });
     } else {
       prev.messages.push(m);
     }

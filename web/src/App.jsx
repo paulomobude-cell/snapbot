@@ -210,12 +210,14 @@ function Dashboard({ settings, onDisconnect }) {
         chat={chat}
         status={status}
         messages={(state.messages[accountId] || {})[chatId] || []}
-        ttlMs={state.config.ttlMs}
         now={now}
         onBack={() => selectChat(null)}
         onSend={(text) => call("message:send", { accountId, chatId, text })}
         onCopy={(text) => navigator.clipboard?.writeText(text).then(() => toast("Copied", "success"))}
         onOpenScreen={() => setPanel("screen")}
+        onPreserve={() => run("pair:request", { accountId, chatId }, "Preservation requested")}
+        onRevoke={() => run("pair:revoke", { accountId, chatId }, "Preservation turned off")}
+        toast={toast}
       />
 
       {panel && account && (

@@ -4,21 +4,37 @@ Like wppconnect-server: the backend keeps Snapchat Web sessions running in
 headless Chrome (one per account) and exposes them over REST + WebSocket. The
 frontend is a live chat dashboard for all your accounts.
 
-**What the dashboard shows**
-- Only messages that are **still on Snapchat**. If a message is deleted on
-  Snapchat (or Snapchat clears it after it's viewed), it's struck through, marked
-  *Deleted*, and fades out, normally within a few seconds.
-- Messages also **expire after 24h** (`MESSAGE_TTL_HOURS`), counted from when the
-  bot first saw them. Each bubble has a countdown ring. The browser removes them on
-  time even when the connection is down.
-- On every reconnect the browser discards its cache and loads fresh state, so
-  stale messages never come back.
+**By default the dashboard is a live mirror.** It shows what Snapchat is
+currently showing for each account, and when Snapchat removes a message the
+dashboard drops it too. Nothing is archived, no media is downloaded.
+
+**Preservation is opt-in per chat, and needs both sides to consent.** For a chat
+you turn it on for (see below), messages are *kept* instead of lost:
+- A message the other person **deletes** stays, struck through with a 🗑️ and a
+  *Deleted* tag.
+- A message Snapchat **clears** (after viewing, or its disappear timer) stays,
+  marked *No longer on Snapchat*.
+- **Photos, videos and tap-to-view snaps** are saved (to Cloudflare R2 or the
+  data volume) and viewable in the dashboard without a time or view limit.
+- Nothing expires on its own (`MESSAGE_TTL_HOURS=0`). Set it above 0 only if you
+  *want* preserved messages pruned after N hours; deleted ones are always kept.
+
+**Consent handshake.** Preservation only turns on for a chat once both ends opt
+in, so you're never silently keeping someone else's disappearing messages:
+- If the chat's peer is **another account you added here**, it links
+  automatically — both ends are yours.
+- Otherwise the dashboard shows a **code**; the other person types that code into
+  the chat, and *their* reply is their consent. Until then the chat stays a live
+  mirror. Turning preservation off erases what was kept for that chat.
+
+The bot does **not** hide that you've read messages: opening a chat to mirror it
+marks it read on Snapchat, exactly like opening the app yourself.
 
 **Dashboard features:** multiple accounts with status dots and unread badges,
 chat search (`Ctrl K` or `/`), All / Unread / With-messages filters, previews,
-streaks, grouped messages, optimistic sending with retry, jump-to-latest, an
-activity feed (new / deleted / session events), desktop notifications, unread
-count in the tab title, light/dark theme, and a phone layout.
+streaks, grouped messages, inline media with a lightbox, optimistic sending with
+retry, jump-to-latest, an activity feed, desktop notifications, unread count in
+the tab title, light/dark theme, and a phone layout.
 
 ## Accounts: dashboard login vs env
 
@@ -37,9 +53,18 @@ you logged in**, so the password isn't needed after the first login.
 - `USER_NAME` / `USER_PASSWORD` env vars still work: on first boot they create
   an account and are never copied into the database.
 
-Everything lives in `/data/snapbot.db` (SQLite: accounts, messages, expiry
-records, activity) plus the Chrome profiles. The activity feed never stores
-message text, so deleted messages don't linger there either.
+Everything lives in `/data/snapbot.db` (SQLite: accounts, messages, media
+records, consent pairs, activity) plus the Chrome profiles. Preserved media
+files go to Cloudflare R2 if configured, otherwise under `/data/media`.
+
+## Media storage: Cloudflare R2 (recommended) or the volume
+
+Images and videos add up, so for preserved chats put them in **Cloudflare R2**:
+create a bucket and an API token, then set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
+`R2_SECRET_ACCESS_KEY`, `R2_BUCKET`. The frontend only ever receives short-lived
+**signed** URLs (`MEDIA_URL_TTL_SECONDS`), never public links. If you leave the
+R2 vars unset, media is stored on the `/data` volume and served through the
+backend with the same signed-URL scheme (`PUBLIC_URL`, auto-detected on Railway).
 
 ## 1. Backend → Railway
 
@@ -98,22 +123,32 @@ All `/api/*` routes need `Authorization: Bearer <API_TOKEN>`.
 | PATCH · DELETE | `/api/accounts/:id` | update `{ label?, remember?, password? }` · remove (deletes its data) |
 | POST | `/api/accounts/:id/start` · `/restart` · `/logout` | session lifecycle |
 | POST | `/api/accounts/:id/login` | `{ username, password, remember? }` |
-| GET | `/api/accounts/:id/chats` | chats with last-message previews |
-| GET | `/api/accounts/:id/chats/:chatId/messages` | live messages (deleted/expired excluded) |
+| GET | `/api/accounts/:id/chats` | chats with previews + `preservation` state |
+| GET | `/api/accounts/:id/chats/:chatId/messages` | messages (with signed media URLs); `?before=<ord>` to page |
 | POST | `/api/accounts/:id/chats/:chatId/messages` | `{ text }` send a chat |
+| GET · POST · DELETE | `/api/accounts/:id/pairs` · `.../chats/:chatId/handshake` | list · request · revoke preservation |
 | GET | `/api/accounts/:id/events` | activity feed |
 | GET | `/api/accounts/:id/screen` | JPEG screenshot of the session |
 
-Socket.IO (`auth: { token }`). Every payload carries `accountId`. The server emits
-`accounts`, `status`, `chats`, `chat:snapshot`, `message:new`, `message:deleted`,
-`message:expired`, `activity`, `activity:list` and `screen:frame`. The client
-emits `account:open|create|update|remove|login|start|restart|logout`,
-`chat:select`, `message:send` and `screen:start|stop|click|type|key|scroll`.
-Webhook bodies are `{ event, data, at }` with `data.accountId` set.
+Socket.IO (`auth: { token }`). Every payload carries `accountId`. The server
+emits `accounts`, `status`, `chats`, `chat:snapshot`, `message:new`,
+`message:updated` (archived, or media saved), `message:removed`, `pairs`,
+`activity`, `activity:list` and `screen:frame`. The client emits
+`account:open|create|update|remove|login|start|restart|logout`, `chat:select`,
+`message:send`, `pair:request`, `pair:revoke` and
+`screen:start|stop|click|type|key|scroll`. Webhook bodies are
+`{ event, data, at }` with `data.accountId` set.
 
 ## Caveats
+- Preservation needs the other side's consent (linked own-account, or the code).
+  It can't technically *prove* the person understood; it records that they took
+  the opt-in action. Use it honestly.
 - The bot reads chats by opening them in Snapchat Web, so the other person sees
-  them as opened, just like opening them yourself. Chats that have no new
-  activity are only re-checked for deletions every `FULL_SYNC_INTERVAL_MS`.
+  them as opened, just like opening them yourself. Chats with no new activity are
+  re-checked every `FULL_SYNC_INTERVAL_MS`.
+- Opening a preserved tap-to-view snap marks it viewed on Snapchat (same as if
+  you opened it). Snaps you *sent* are never auto-opened.
 - It depends on Snapchat Web's CSS selectors (last tested on v13.38.0). If
-  Snapchat changes its UI, the selectors in `snapbot.js` need updating.
+  Snapchat changes its UI, the selectors in `snapbot.js` need updating; the
+  deleted-notice and snap-tile text can be tuned with `DELETED_NOTICE_PATTERN`
+  and `SNAP_TILE_PATTERN`.

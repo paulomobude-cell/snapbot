@@ -376,3 +376,54 @@ input[type="checkbox"] { width: auto; accent-color: var(--me); }
   .hover-only { opacity: 1; }
   .toasts { left: 16px; right: 16px; }
 }
+
+/* ---- consent / preservation ---- */
+.preserve {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 16px; font-size: 13px; border-bottom: 1px solid var(--border);
+}
+.preserve.off { background: var(--panel-2); color: var(--muted); }
+.preserve.pending { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--text); }
+.preserve.on { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--text); }
+.preserve .btn.small, .preserve .link { margin-left: auto; }
+.preserve .link { white-space: nowrap; }
+.handcode {
+  font-family: ui-monospace, monospace; font-weight: 700; letter-spacing: 0.5px;
+  background: var(--panel); border: 1px dashed var(--muted); border-radius: 8px;
+  padding: 3px 10px; cursor: pointer;
+}
+.preserve-dot { display: inline-flex; color: var(--ok); }
+.preserve-dot.pending { color: var(--warn); }
+
+/* ---- deleted / gone messages stay visible ---- */
+.bubble-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble-row.deleted .bubble { border-left-color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--bubble-them)); }
+.group.me .bubble-row.deleted .bubble { border-right-color: var(--danger); }
+.bubble-row.deleted .bubble-text { text-decoration: line-through; text-decoration-color: var(--danger); opacity: 0.85; }
+.bubble-row.gone .bubble { opacity: 0.8; border-left-style: dashed; }
+.gone-tag {
+  display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; vertical-align: 1px; padding: 1px 6px; border-radius: 6px;
+  background: var(--muted); color: var(--panel);
+}
+.gone-tag.del { background: var(--danger); color: #fff; }
+
+/* ---- media ---- */
+.media-wrap { position: relative; display: inline-block; margin: 2px 0 4px; }
+.media { max-width: min(320px, 70vw); max-height: 360px; border-radius: 10px; display: block; cursor: zoom-in; }
+video.media { cursor: default; }
+.once-badge {
+  position: absolute; top: 6px; left: 6px; font-size: 11px; font-weight: 700;
+  background: rgba(0,0,0,0.6); color: #fff; padding: 2px 7px; border-radius: 99px; pointer-events: none;
+}
+.media-chip {
+  display: inline-block; font-size: 12px; color: var(--muted);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px;
+}
+.media-chip.failed { color: var(--danger); }
+.snap-tag { font-weight: 600; color: var(--them); }
+.lightbox {
+  position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,0.85);
+  display: grid; place-items: center; padding: 24px; cursor: zoom-out;
+}
+.lightbox img { max-width: 100%; max-height: 100%; border-radius: 8px; }

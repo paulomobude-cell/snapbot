@@ -1,7 +1,9 @@
 import { EventEmitter } from "events";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import SnapBot from "../snapbot.js";
+import { sniffType } from "./media.js";
 
 const LOGIN_URL = "https://www.snapchat.com/?original_referrer=none";
 const LOGIN_FORM = '#ai_input, input[name="accountIdentifier"]';
@@ -14,8 +16,10 @@ function delay(time) {
 // Runs one Snapchat Web session and keeps the MessageStore in sync with it.
 // Emits: status, chats, screen:frame
 export default class Session extends EventEmitter {
-  constructor({ store, config, profileDir, credentials = null, BotClass = SnapBot }) {
+  constructor({ store, media, config, profileDir, credentials = null, BotClass = SnapBot }) {
     super();
+    this.media = media;
+    this.shaBySrc = new Map(); // blob URL -> sha256 of its content (blob URLs live per page load)
     this.BotClass = BotClass;
     this.profileDir = profileDir;
     this.credentials = credentials; // { username, password } for auto re-login
@@ -64,6 +68,14 @@ export default class Session extends EventEmitter {
 
       const bot = new this.BotClass();
       this.bot = bot;
+      this.shaBySrc.clear();
+      // before Snapchat loads: never send read receipts/typing, and keep decrypted media
+      bot.onPageCreated = async () => {
+        if (this.config.blockedRequests.length && bot.blockRequests) {
+          await bot.blockRequests(this.config.blockedRequests);
+        }
+        if (bot.installMediaCapture) await bot.installMediaCapture();
+      };
       await bot.launchSnapchat({
         headless: this.config.headless,
         executablePath: this.config.chromePath || undefined,
@@ -180,9 +192,6 @@ export default class Session extends EventEmitter {
   async onLoggedIn() {
     this.setStatus("connected");
     await this.run(() => this.bot.handlePopup());
-    if (this.config.blockTyping) {
-      await this.run(() => this.bot.blockTypingNotifications(true));
-    }
     this.scheduleLoop(0);
   }
 
@@ -246,13 +255,123 @@ export default class Session extends EventEmitter {
   async syncChat(chatId) {
     const chat = this.chats.find((c) => c.id === chatId);
     if (!chat) return;
-    const messages = await this.run(async () => {
+    const items = await this.run(async () => {
       if (!(await this.bot.openChat(chatId))) return null;
       await delay(800); // let messages render
-      return this.bot.readMessages(chatId, chat.name);
+      return this.bot.readMessages(chatId, chat.name, this.config.patterns);
     });
-    // null means the chat didn't load; don't treat that as "everything deleted"
-    if (messages) this.store.sync(chatId, messages);
+    // null means the chat didn't load; don't treat that as "everything left"
+    if (!items) return;
+
+    // consent handshake first, so a code that just arrived takes effect this cycle
+    this.detectHandshake(chatId, items);
+
+    // Preservation (keeping deleted/expired messages, capturing media, opening
+    // view-once snaps) happens ONLY for a chat both sides consented to. Otherwise
+    // the chat is just mirrored live and nothing is archived or downloaded.
+    const preserve = this.store.isAuthorized(chatId);
+    let buffers = new Map();
+    if (preserve) buffers = await this.run(() => this.readMediaBuffers(items));
+    const { seen } = this.store.sync(chatId, items, { preserve });
+    if (preserve) await this.captureMedia(chatId, seen, buffers);
+  }
+
+  // decrypts chat media into buffers keyed by content hash; tags each item with
+  // its sha256 (blob URLs change every page load, so content is the stable id)
+  async readMediaBuffers(items) {
+    const buffers = new Map();
+    for (const item of items) {
+      if (item.kind !== "media") continue;
+      if (this.shaBySrc.has(item.src)) {
+        item.sha256 = this.shaBySrc.get(item.src);
+        continue;
+      }
+      const read = await this.readBuffer(() => this.bot.readMedia(item.src));
+      if (!read) continue;
+      item.sha256 = read.sha256;
+      this.shaBySrc.set(item.src, read.sha256);
+      if (this.shaBySrc.size > 5000) this.shaBySrc.delete(this.shaBySrc.keys().next().value);
+      buffers.set(read.sha256, read);
+    }
+    return buffers;
+  }
+
+  // a chat whose pair is pending becomes authorized once the peer sends the code
+  detectHandshake(chatId, items) {
+    const pair = this.store.getPair(chatId);
+    if (!pair || pair.status !== "pending" || !pair.code) return;
+    const norm = (s) => s.replace(/[^a-z0-9]/gi, "").toLowerCase();
+    const target = norm(pair.code);
+    const hit = items.some(
+      (it) => it.kind === "text" && !it.isMe && target && norm(it.text).includes(target)
+    );
+    if (!hit) return;
+    const updated = this.store.authorizePair(chatId, "code");
+    this.emit("pair:update", { chatId, pair: updated, justAuthorized: true });
+  }
+
+  // re-sync a chat right after its consent state changes
+  async resyncChat(chatId) {
+    if (this.status === "connected") await this.syncChat(chatId).catch(() => {});
+  }
+
+  async readBuffer(read) {
+    const media = await read().catch(() => null);
+    if (!media?.base64) return null;
+    const buffer = Buffer.from(media.base64, "base64");
+    const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+    return { buffer, sha256, contentType: sniffType(buffer, media.type) };
+  }
+
+  // Stores media for live messages in a consented chat that don't have it yet:
+  // chat photos/videos from their blob, and tap-to-view snaps by opening them
+  // (opening marks them viewed on Snapchat, same as if you opened the snap).
+  async captureMedia(chatId, seen, buffers) {
+    let snapsOpened = 0;
+    for (const [id, item] of seen) {
+      if (item.kind !== "media" && item.kind !== "snap") continue;
+      const message = this.store.getById(id);
+      if (!message) continue;
+      const existing = message.media[0];
+      if (existing && existing.status !== "pending") continue;
+
+      const viewOnce = item.kind === "snap";
+      if (viewOnce && (!this.config.captureSnaps || item.isMe)) continue;
+      if (viewOnce && snapsOpened >= this.config.snapsPerSync) continue;
+
+      const mediaId = existing?.id || this.store.addMedia(message.uid, {
+        kind: item.mediaType || "image",
+        viewOnce,
+      });
+      let read = viewOnce ? null : buffers.get(item.sha256);
+      if (!read) {
+        if (viewOnce) snapsOpened++;
+        read = await this.run(() =>
+          this.readBuffer(() =>
+            viewOnce ? this.bot.openReceivedSnap(item.snapIndex) : this.bot.readMedia(item.src)
+          )
+        );
+      }
+      if (!read) {
+        this.store.mediaFailed(mediaId, 3);
+        this.store.touch(message.uid);
+        continue;
+      }
+      try {
+        const kind = read.contentType.startsWith("video/") ? "video" : "image";
+        const reuse = this.store.storedBySha(read.sha256);
+        const key = reuse?.storageKey ||
+          this.media.keyFor({ accountId: this.accountId, chatId, sha256: read.sha256, contentType: read.contentType });
+        if (!reuse) await this.media.put(key, read.buffer, read.contentType);
+        this.store.mediaStored(mediaId, {
+          key, contentType: read.contentType, size: read.buffer.length, sha256: read.sha256, kind,
+        });
+      } catch (error) {
+        console.error("Media upload failed", error.message);
+        this.store.mediaFailed(mediaId, 3);
+      }
+      this.store.touch(message.uid);
+    }
   }
 
   async selectChat(chatId) {
@@ -277,7 +396,7 @@ export default class Session extends EventEmitter {
     } catch (error) {
       console.error("Logout failed", error.message);
     }
-    this.store.clear();
+    this.store.resetSync(); // the archive stays
     this.chats = [];
     this.emit("chats", []);
     this.setStatus("needs_login");

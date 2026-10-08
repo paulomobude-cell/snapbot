@@ -11,8 +11,9 @@ const EVENT_LIMIT = 500; // per account
 // Re-emits everything with an accountId attached:
 // accounts, status, chats, chat:snapshot, message:*, activity, screen:frame
 export default class AccountManager extends EventEmitter {
-  constructor({ db, cipher, config, BotClass }) {
+  constructor({ db, cipher, media, config, BotClass }) {
     super();
+    this.media = media;
     this.db = db;
     this.cipher = cipher;
     this.config = config;
@@ -67,6 +68,7 @@ export default class AccountManager extends EventEmitter {
     const session = new Session({
       store,
       config: this.config,
+      media: this.media,
       profileDir: this.profileDir(id),
       credentials: this.credentialsFor(row),
       BotClass: this.BotClass,
@@ -76,26 +78,48 @@ export default class AccountManager extends EventEmitter {
     this.entries.set(id, entry);
 
     const chatName = (chatId) => session.chats.find((c) => c.id === chatId)?.name || "";
-    const forward = (event) => (data) => this.emit(event, { accountId: id, ...data });
+    // media links are signed per send; a chain keeps events in order
+    let chain = Promise.resolve();
+    const send = (event, build) => {
+      chain = chain
+        .then(async () => this.emit(event, { accountId: id, ...(await build()) }))
+        .catch((error) => console.error(`Emit ${event} failed`, error.message));
+    };
+    const short = (text) => (text.length > 60 ? `${text.slice(0, 57)}…` : text);
+    const what = (m) => (m.kind === "snap" ? "a snap" : m.kind === "media" ? "a photo/video" : "a chat");
 
     session.on("status", (s) => {
       this.log(id, "status", null, s.error ? `${s.status}: ${s.error}` : s.status);
       this.emit("status", { accountId: id, ...s });
       this.emitAccounts();
     });
-    session.on("chats", (chats) => this.emit("chats", { accountId: id, chats: this.chatsWithPreviews(id) }));
+    session.on("chats", () => this.emit("chats", { accountId: id, chats: this.chatsWithPreviews(id) }));
     session.on("screen:frame", (frame) => this.emit("screen:frame", { accountId: id, frame }));
-    store.on("chat:snapshot", forward("chat:snapshot"));
+    store.on("chat:snapshot", ({ chatId, messages }) =>
+      send("chat:snapshot", async () => ({ chatId, messages: await this.withUrls(messages) }))
+    );
     store.on("message:new", (message) => {
-      this.emit("message:new", { accountId: id, message });
-      if (!message.isMe) this.log(id, "new", message.chatId, `${chatName(message.chatId)}: new message`);
+      send("message:new", async () => ({ message: (await this.withUrls([message]))[0] }));
+      if (!message.isMe) this.log(id, "new", message.chatId, `${chatName(message.chatId)}: sent ${what(message)}`);
     });
-    store.on("message:deleted", (data) => {
-      this.emit("message:deleted", { accountId: id, ...data });
-      this.log(id, "deleted", data.chatId, `${chatName(data.chatId)}: message deleted`);
+    store.on("message:updated", (message) => {
+      send("message:updated", async () => ({ message: (await this.withUrls([message]))[0] }));
+      if (message.state === "deleted") {
+        const content = message.text ? `"${short(message.text)}"` : what(message);
+        this.log(id, "deleted", message.chatId, `${message.from} deleted ${content} in ${chatName(message.chatId)}`);
+      }
     });
-    store.on("message:expired", (data) => {
-      this.emit("message:expired", { accountId: id, ...data });
+    store.on("message:removed", (data) => send("message:removed", () => data));
+    store.on("media:purge", (keys) => {
+      for (const key of keys) this.media.remove(key).catch(() => {});
+    });
+    // peer typed the agreed code: the current sync already preserves, just refresh UI
+    session.on("pair:update", ({ chatId, pair, justAuthorized }) => {
+      if (justAuthorized) {
+        this.log(id, "status", chatId, `${pair.peerName || "chat"}: preservation authorized (peer sent the code)`);
+      }
+      this.emit("pairs", { accountId: id, pairs: store.listPairs() });
+      this.emit("chats", { accountId: id, chats: this.chatsWithPreviews(id) });
     });
 
     session.start();
@@ -125,10 +149,96 @@ export default class AccountManager extends EventEmitter {
     return entry;
   }
 
+  // adds short-lived signed links to stored media
+  async withUrls(messages) {
+    return Promise.all(messages.map(async (m) => ({
+      ...m,
+      media: await Promise.all(m.media.map(async ({ storageKey, ...media }) => ({
+        ...media,
+        url: media.status === "stored" ? await this.media.url(storageKey, this.config.mediaUrlTtl) : null,
+      }))),
+    })));
+  }
+
+  async messages(accountId, chatId, options) {
+    return this.withUrls(this.get(accountId).store.getMessages(chatId, options));
+  }
+
   chatsWithPreviews(id) {
     const { session, store } = this.get(id);
     const previews = store.previews();
-    return session.chats.map((chat) => ({ ...chat, preview: previews[chat.id] || null }));
+    const pairs = Object.fromEntries(store.listPairs().map((p) => [p.chatId, p]));
+    return session.chats.map((chat) => {
+      const pair = pairs[chat.id];
+      return {
+        ...chat,
+        preview: previews[chat.id] || null,
+        preservation: pair
+          ? { status: pair.status, method: pair.method, code: pair.status === "pending" ? pair.code : null }
+          : { status: "none" },
+      };
+    });
+  }
+
+  pairs(id) {
+    return this.get(id).store.listPairs();
+  }
+
+  // a short, unambiguous code the peer types back to prove they consent
+  makeCode() {
+    const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
+    let s = "";
+    for (const b of crypto.randomBytes(6)) s += alphabet[b % alphabet.length];
+    return `SNAP-${s}`;
+  }
+
+  // is this chat's peer another account the same user owns?
+  matchOwnAccount(id, chat) {
+    if (!chat) return null;
+    const norm = (s) => String(s || "").trim().toLowerCase();
+    const candidates = [norm(chat.id), norm(chat.name)];
+    for (const [otherId, { account }] of this.entries) {
+      if (otherId === id) continue;
+      if (account.username && candidates.includes(norm(account.username))) return account;
+    }
+    return null;
+  }
+
+  // Start preservation for a chat. If the peer is another of your own accounts it
+  // turns on at once (linked). Otherwise it stays pending until the peer sends the
+  // code — that reply is the other person's consent.
+  requestHandshake(id, chatId) {
+    const { store, session } = this.get(id);
+    const chat = session.chats.find((c) => c.id === chatId);
+    const peerName = chat?.name || chatId;
+    const linked = this.matchOwnAccount(id, chat);
+    if (linked) {
+      const pair = store.authorizePair(chatId, "linked");
+      this.log(id, "status", chatId, `${peerName}: preservation on (linked to your account "${linked.label}")`);
+      this.afterPairChange(id, chatId, { resync: true });
+      return { ...pair, linkedTo: linked.label };
+    }
+    const pair = store.requestPair(chatId, peerName, this.makeCode());
+    this.log(id, "status", chatId, `${peerName}: handshake started, waiting for the code`);
+    this.afterPairChange(id, chatId, { resync: false });
+    return pair;
+  }
+
+  // turn preservation off and purge what was archived for that chat
+  revokeHandshake(id, chatId) {
+    const { store } = this.get(id);
+    const peer = store.getPair(chatId)?.peerName;
+    const messages = store.revokePair(chatId);
+    this.log(id, "status", chatId, `${peer || "chat"}: preservation off, archive purged`);
+    this.afterPairChange(id, chatId, { resync: false });
+    return this.withUrls(messages);
+  }
+
+  afterPairChange(id, chatId, { resync }) {
+    const { session, store } = this.get(id);
+    this.emit("pairs", { accountId: id, pairs: store.listPairs() });
+    this.emit("chats", { accountId: id, chats: this.chatsWithPreviews(id) });
+    if (resync) session.resyncChat(chatId);
   }
 
   list() {
@@ -203,6 +313,7 @@ export default class AccountManager extends EventEmitter {
 
   async remove(id) {
     const { session, store } = this.get(id);
+    store.clear(); // purges its media from storage too
     this.entries.delete(id);
     await session.stop();
     session.removeAllListeners();

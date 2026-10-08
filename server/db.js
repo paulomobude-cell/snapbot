@@ -4,6 +4,11 @@ import { DatabaseSync } from "node:sqlite";
 
 export function openDb(dataDir) {
   const db = new DatabaseSync(path.join(dataDir, "snapbot.db"));
+  // v3 archives messages instead of dropping them; older message tables only
+  // held what Snapchat still showed, so they're rebuilt from the next sync
+  if (db.prepare("PRAGMA user_version").get().user_version < 3) {
+    db.exec("DROP TABLE IF EXISTS messages; DROP TABLE IF EXISTS tombstones;");
+  }
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
@@ -18,21 +23,40 @@ export function openDb(dataDir) {
 
     CREATE TABLE IF NOT EXISTS messages (
       account_id    TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-      id            TEXT NOT NULL,
+      id            TEXT NOT NULL,   -- content-derived; suffixed once the message leaves Snapchat
+      uid           TEXT NOT NULL,   -- never changes; media points here
       chat_id       TEXT NOT NULL,
+      kind          TEXT NOT NULL,   -- text | media | snap
       from_name     TEXT NOT NULL,
       is_me         INTEGER NOT NULL,
       text          TEXT NOT NULL,
       time          TEXT NOT NULL,
-      pos           INTEGER NOT NULL,
+      ord           REAL NOT NULL,   -- display order, stable as Snapchat drops messages
+      state         TEXT NOT NULL DEFAULT 'live', -- live | deleted (by sender) | gone (cleared by Snapchat)
       first_seen_at INTEGER NOT NULL,
-      expires_at    INTEGER NOT NULL,
+      changed_at    INTEGER,
       PRIMARY KEY (account_id, id)
     );
-    CREATE INDEX IF NOT EXISTS messages_chat ON messages (account_id, chat_id);
-    CREATE INDEX IF NOT EXISTS messages_expiry ON messages (expires_at);
+    CREATE INDEX IF NOT EXISTS messages_chat ON messages (account_id, chat_id, ord);
+    CREATE UNIQUE INDEX IF NOT EXISTS messages_uid ON messages (uid);
 
-    -- ids of messages that hit the TTL while Snapchat still showed them
+    CREATE TABLE IF NOT EXISTS media (
+      id           TEXT PRIMARY KEY,
+      account_id   TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      message_uid  TEXT NOT NULL,
+      kind         TEXT NOT NULL,     -- image | video
+      view_once    INTEGER NOT NULL,  -- tap-to-view snap
+      status       TEXT NOT NULL,     -- pending | stored | failed
+      storage_key  TEXT,
+      content_type TEXT,
+      size         INTEGER,
+      sha256       TEXT,
+      attempts     INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS media_message ON media (message_uid);
+
+    -- ids of messages removed by MESSAGE_TTL_HOURS while Snapchat still showed them
     CREATE TABLE IF NOT EXISTS tombstones (
       account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
       id         TEXT NOT NULL,
@@ -41,7 +65,21 @@ export function openDb(dataDir) {
       PRIMARY KEY (account_id, id)
     );
 
-    -- activity feed; never holds message text, so deleted content isn't kept
+    -- consent gate: a chat is preserved (kept past Snapchat's delete/expiry, media
+    -- captured) only when BOTH ends opted in. No row = not preserved (mirror only).
+    CREATE TABLE IF NOT EXISTS pairs (
+      account_id    TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      chat_id       TEXT NOT NULL,
+      peer_name     TEXT,
+      status        TEXT NOT NULL,   -- pending | authorized
+      method        TEXT,            -- code (peer typed the phrase) | linked (both accounts are yours)
+      code          TEXT,            -- handshake phrase the peer must send, while pending
+      requested_at  INTEGER,
+      authorized_at INTEGER,
+      PRIMARY KEY (account_id, chat_id)
+    );
+
+    -- activity feed
     CREATE TABLE IF NOT EXISTS events (
       seq        INTEGER PRIMARY KEY AUTOINCREMENT,
       account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -51,6 +89,7 @@ export function openDb(dataDir) {
       at         INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS events_account ON events (account_id, seq);
+    PRAGMA user_version = 4;
   `);
   return db;
 }

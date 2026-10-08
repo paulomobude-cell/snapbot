@@ -1,16 +1,19 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { io } from "socket.io-client";
 
-export const LEAVE_MS = 1600; // how long a deleted/expired bubble animates out
-
+// Messages are keyed by `uid` (stable). A message's `id` changes when it is
+// archived (deleted/gone), so never key on `id`. Messages do NOT expire or
+// disappear on their own — preserved chats keep everything, including deleted
+// ones (shown struck through with a bin). Mirror-only chats just drop whatever
+// Snapchat drops, via message:removed.
 const initial = {
   accounts: [],
   status: {}, // accountId -> { status, error }
-  chats: {}, // accountId -> Chat[]
-  messages: {}, // accountId -> { chatId -> Message[] }  (leavingAt/leaveReason while animating out)
+  chats: {}, // accountId -> Chat[] (each carries .preservation)
+  messages: {}, // accountId -> { chatId -> Message[] }
   activity: {}, // accountId -> Event[] newest first
-  unread: loadUnread(), // accountId -> { chatId -> messageId[] }
-  config: { ttlMs: 24 * 3600 * 1000, maxAccounts: 3 },
+  unread: loadUnread(), // accountId -> { chatId -> uid[] }
+  config: { maxAccounts: 3 },
 };
 
 function loadUnread() {
@@ -22,21 +25,12 @@ function loadUnread() {
 }
 
 const setIn = (obj, acc, value) => ({ ...obj, [acc]: value });
+const byOrd = (a, b) => a.ord - b.ord;
 
-function markLeaving(list, ids, reason, now) {
-  let changed = false;
-  const next = list.map((m) => {
-    if (!ids.has(m.id) || m.leavingAt) return m;
-    changed = true;
-    return { ...m, leavingAt: now, leaveReason: reason };
-  });
-  return changed ? next : list;
-}
-
-function dropUnread(unread, acc, chatId, ids) {
+function dropUnread(unread, acc, chatId, uids) {
   const list = unread[acc]?.[chatId];
   if (!list) return unread;
-  const kept = list.filter((id) => !ids.has(id));
+  const kept = list.filter((u) => !uids.has(u));
   if (kept.length === list.length) return unread;
   return setIn(unread, acc, { ...unread[acc], [chatId]: kept });
 }
@@ -45,7 +39,7 @@ function reducer(state, a) {
   const acc = a.accountId;
   switch (a.type) {
     case "reset":
-      // reconnect: forget every message, the server re-sends what still exists
+      // reconnect: forget cached messages, the server re-sends current state
       return { ...state, messages: {}, chats: {} };
     case "config":
       return { ...state, config: { ...state.config, ...a.config } };
@@ -69,72 +63,42 @@ function reducer(state, a) {
     case "chats":
       return { ...state, chats: setIn(state.chats, acc, a.chats) };
     case "snapshot": {
-      // authoritative list for the chat: anything missing from it was deleted
       const byChat = state.messages[acc] || {};
-      const current = byChat[a.chatId] || [];
-      const incoming = new Set(a.messages.map((m) => m.id));
-      const leaving = current
-        .filter((m) => !incoming.has(m.id))
-        .map((m) => (m.leavingAt ? m : { ...m, leavingAt: a.now, leaveReason: "deleted" }));
-      const merged = [...a.messages];
-      // keep leaving bubbles right after whatever preceded them, so they fade out in place
-      for (const m of leaving) {
-        const before = current.slice(0, current.findIndex((x) => x.id === m.id));
-        const anchor = before.reverse().find((x) => merged.some((y) => y.id === x.id));
-        const at = anchor ? merged.findIndex((y) => y.id === anchor.id) + 1 : 0;
-        merged.splice(at, 0, m);
-      }
-      const gone = new Set(leaving.map((m) => m.id));
-      return {
-        ...state,
-        messages: setIn(state.messages, acc, { ...byChat, [a.chatId]: merged }),
-        unread: dropUnread(state.unread, acc, a.chatId, gone),
-      };
+      return { ...state, messages: setIn(state.messages, acc, { ...byChat, [a.chatId]: [...a.messages].sort(byOrd) }) };
     }
     case "new": {
       const byChat = state.messages[acc] || {};
       const list = byChat[a.message.chatId] || [];
-      if (list.some((m) => m.id === a.message.id)) return state;
+      if (list.some((m) => m.uid === a.message.uid)) return state;
       let unread = state.unread;
       if (a.markUnread) {
         const u = unread[acc] || {};
-        unread = setIn(unread, acc, { ...u, [a.message.chatId]: [...(u[a.message.chatId] || []), a.message.id] });
+        unread = setIn(unread, acc, { ...u, [a.message.chatId]: [...(u[a.message.chatId] || []), a.message.uid] });
       }
       return {
         ...state,
-        messages: setIn(state.messages, acc, { ...byChat, [a.message.chatId]: [...list, a.message] }),
+        messages: setIn(state.messages, acc, { ...byChat, [a.message.chatId]: [...list, a.message].sort(byOrd) }),
         unread,
       };
     }
-    case "leave": {
+    case "updated": {
+      // same uid, new state/display/media (archived, or media finished uploading)
+      const byChat = state.messages[acc] || {};
+      const list = byChat[a.message.chatId];
+      if (!list) return state;
+      const next = list.map((m) => (m.uid === a.message.uid ? a.message : m));
+      return { ...state, messages: setIn(state.messages, acc, { ...byChat, [a.message.chatId]: next }) };
+    }
+    case "removed": {
       const byChat = state.messages[acc] || {};
       const list = byChat[a.chatId];
-      const ids = new Set([a.id]);
-      const unread = dropUnread(state.unread, acc, a.chatId, ids);
+      const unread = dropUnread(state.unread, acc, a.chatId, new Set([a.uid]));
       if (!list) return { ...state, unread };
       return {
         ...state,
-        messages: setIn(state.messages, acc, { ...byChat, [a.chatId]: markLeaving(list, ids, a.reason, a.now) }),
+        messages: setIn(state.messages, acc, { ...byChat, [a.chatId]: list.filter((m) => m.uid !== a.uid) }),
         unread,
       };
-    }
-    case "tick": {
-      // client-side expiry + finishing leave animations
-      let changed = false;
-      let unread = state.unread;
-      const messages = {};
-      for (const [accId, byChat] of Object.entries(state.messages)) {
-        messages[accId] = {};
-        for (const [chatId, list] of Object.entries(byChat)) {
-          const expired = new Set(list.filter((m) => !m.leavingAt && m.expiresAt <= a.now).map((m) => m.id));
-          let next = expired.size ? markLeaving(list, expired, "expired", a.now) : list;
-          next = next.filter((m) => !m.leavingAt || a.now - m.leavingAt < LEAVE_MS);
-          if (expired.size) unread = dropUnread(unread, accId, chatId, expired);
-          if (next !== list) changed = true;
-          messages[accId][chatId] = next;
-        }
-      }
-      return changed ? { ...state, messages, unread } : state;
     }
     case "read": {
       if (!state.unread[acc]?.[a.chatId]?.length) return state;
@@ -152,58 +116,48 @@ function reducer(state, a) {
 }
 
 // One socket to the backend; everything it pushes lands in a single reducer.
-export function useBackend(settings, { onMessage, onError }) {
+export function useBackend(settings, { onMessage }) {
   const [state, dispatch] = useReducer(reducer, initial);
   const [socket, setSocket] = useState(null);
   const [conn, setConn] = useState({ connected: false, error: "" });
-  const [clockOffset, setClockOffset] = useState(0);
   const [now, setNow] = useState(Date.now());
-  const handlers = useRef({ onMessage, onError, view: null });
+  const handlers = useRef({ onMessage, view: null });
   handlers.current.onMessage = onMessage;
-  handlers.current.onError = onError;
 
   useEffect(() => {
     const s = io(settings.url, { auth: { token: settings.token } });
-    const offsetRef = { current: 0 };
-    const serverNow = () => Date.now() + offsetRef.current;
     s.on("connect", () => {
       setConn({ connected: true, error: "" });
-      // the app re-opens the current account/chat when `connected` flips
-      dispatch({ type: "reset" });
+      dispatch({ type: "reset" }); // the app re-opens the current account/chat
     });
     s.on("disconnect", () => setConn((c) => ({ ...c, connected: false })));
     s.on("connect_error", (err) => setConn({ connected: false, error: err.message }));
-    s.on("config", (config) => {
-      offsetRef.current = config.now - Date.now();
-      setClockOffset(offsetRef.current);
-      dispatch({ type: "config", config });
-    });
+    s.on("config", (config) => dispatch({ type: "config", config }));
     s.on("accounts", (accounts) => dispatch({ type: "accounts", accounts }));
     s.on("status", (d) => dispatch({ type: "status", ...d }));
     s.on("chats", (d) => dispatch({ type: "chats", ...d }));
-    s.on("chat:snapshot", (d) => dispatch({ type: "snapshot", ...d, now: serverNow() }));
+    s.on("chat:snapshot", (d) => dispatch({ type: "snapshot", ...d }));
     s.on("message:new", ({ accountId, message }) => {
       const view = handlers.current.view;
       const looking = view?.accountId === accountId && view?.chatId === message.chatId && !document.hidden;
       dispatch({ type: "new", accountId, message, markUnread: !message.isMe && !looking });
       if (!message.isMe && !looking) handlers.current.onMessage?.(accountId, message);
     });
-    s.on("message:deleted", (d) => dispatch({ type: "leave", ...d, reason: "deleted", now: serverNow() }));
-    s.on("message:expired", (d) => dispatch({ type: "leave", ...d, reason: "expired", now: serverNow() }));
+    s.on("message:updated", ({ accountId, message }) => dispatch({ type: "updated", accountId, message }));
+    s.on("message:removed", (d) => dispatch({ type: "removed", ...d }));
     s.on("activity:list", (d) => dispatch({ type: "activity:list", ...d }));
     s.on("activity", (d) => dispatch({ type: "activity", ...d }));
+    // pairs come bundled in the chats event (chat.preservation); handler kept for clarity
+    s.on("pairs", () => {});
     setSocket(s);
     return () => s.disconnect();
   }, [settings]);
 
+  // light ticker for relative timestamps
   useEffect(() => {
-    const t = setInterval(() => {
-      const n = Date.now() + clockOffset;
-      setNow(n);
-      dispatch({ type: "tick", now: n });
-    }, 500);
+    const t = setInterval(() => setNow(Date.now()), 30000);
     return () => clearInterval(t);
-  }, [clockOffset]);
+  }, []);
 
   useEffect(() => {
     try {

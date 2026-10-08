@@ -23,13 +23,13 @@ export default function ChatList({ account, status, error, chats, messages, unre
     const q = query.trim().toLowerCase();
     return chats
       .map((chat) => {
-        // prefer what this browser holds (already cleaned of deleted/expired), else the server's preview
-        const local = messages[chat.id]?.filter((m) => !m.leavingAt);
-        const last = local ? local[local.length - 1] : chat.preview?.last;
-        const count = local ? local.length : chat.preview?.count || 0;
+        // prefer what this browser holds, else the server's preview
+        const local = messages[chat.id];
+        const last = local?.length ? local[local.length - 1] : chat.preview?.last;
+        const count = local?.length ?? chat.preview?.count ?? 0;
         return { chat, last, count, unread: unread[chat.id]?.length || 0 };
       })
-      .filter((r) => !q || r.chat.name.toLowerCase().includes(q) || r.last?.text.toLowerCase().includes(q))
+      .filter((r) => !q || r.chat.name.toLowerCase().includes(q) || (r.last?.text || "").toLowerCase().includes(q))
       .filter((r) => filter === "all" || (filter === "unread" ? r.unread > 0 : r.count > 0));
   }, [chats, messages, unread, query, filter]);
 
@@ -63,33 +63,34 @@ export default function ChatList({ account, status, error, chats, messages, unre
         {account && status === "connected" && rows.length === 0 && (
           <Empty icon="message" title={query ? "No matches" : "Nothing here"} text={query ? "Try another name." : "No chats match this filter."} />
         )}
-        {rows.map(({ chat, last, count, unread: n }) => (
-          <button key={chat.id} className={`chatrow ${chat.id === activeId ? "active" : ""} ${n ? "unread" : ""}`} onClick={() => onSelect(chat.id)}>
-            <Avatar name={chat.name} size={42} />
-            <span className="chatrow-body">
-              <span className="chatrow-top">
-                <span className="chatrow-name">{chat.name}</span>
-                {chat.status?.streak && <span className="streak">{chat.status.streak}</span>}
+        {rows.map(({ chat, last, count, unread: n }) => {
+          const preserved = chat.preservation?.status === "authorized";
+          const pending = chat.preservation?.status === "pending";
+          const preview = last ? (last.display || last.text) : null;
+          return (
+            <button key={chat.id} className={`chatrow ${chat.id === activeId ? "active" : ""} ${n ? "unread" : ""}`} onClick={() => onSelect(chat.id)}>
+              <Avatar name={chat.name} size={42} />
+              <span className="chatrow-body">
+                <span className="chatrow-top">
+                  <span className="chatrow-name">{chat.name}</span>
+                  {preserved && <span className="preserve-dot" title="Preserved — messages kept"><Icon name="lock" size={11} /></span>}
+                  {pending && <span className="preserve-dot pending" title="Preservation pending the other account's code"><Icon name="clock" size={11} /></span>}
+                  {chat.status?.streak && <span className="streak">{chat.status.streak}</span>}
+                </span>
+                <span className="chatrow-preview">
+                  {preview ? <>{last.isMe ? "You: " : ""}{last.kind === "media" ? "📷 Photo/Video" : last.kind === "snap" ? "👻 Snap" : preview}</>
+                    : <span className="muted">{[chat.status?.type, chat.status?.time].filter(Boolean).join(" · ") || "No messages"}</span>}
+                </span>
               </span>
-              <span className="chatrow-preview">
-                {last ? <>{last.isMe ? "You: " : ""}{last.text}</> : <span className="muted">{[chat.status?.type, chat.status?.time].filter(Boolean).join(" · ") || "No messages"}</span>}
+              <span className="chatrow-side">
+                {n > 0 ? <span className="badge">{n}</span> : count > 0 && <span className="count">{count}</span>}
               </span>
-            </span>
-            <span className="chatrow-side">
-              {last && <ExpiryDot expiresAt={last.expiresAt} now={now} />}
-              {n > 0 ? <span className="badge">{n}</span> : count > 0 && <span className="count">{count}</span>}
-            </span>
-          </button>
-        ))}
+            </button>
+          );
+        })}
       </div>
     </section>
   );
-}
-
-function ExpiryDot({ expiresAt, now }) {
-  const left = expiresAt - now;
-  if (left > 3600 * 1000) return null;
-  return <span className="soon" title="Last message disappears within the hour"><Icon name="clock" size={12} /></span>;
 }
 
 export function Empty({ icon, title, text, children }) {
