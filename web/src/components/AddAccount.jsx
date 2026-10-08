@@ -9,7 +9,7 @@ export default function AddAccount({ first, onClose, onCreate }) {
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
 
   return (
-    <Modal title={first ? "Add your Snapchat account" : "Add account"} onClose={first ? null : onClose}>
+    <Modal title={first ? "Add your Snapchat account" : "Add account"} onClose={onClose}>
       <form className="stack" onSubmit={async (e) => {
         e.preventDefault();
         setBusy(true);
@@ -53,7 +53,7 @@ export default function AddAccount({ first, onClose, onCreate }) {
         )}
         {error && <div className="alert">{error}</div>}
         <div className="row end">
-          {!first && <button type="button" className="btn" onClick={onClose}>Cancel</button>}
+          <button type="button" className="btn" onClick={onClose}>Cancel</button>
           <button className="btn primary" disabled={busy}>{busy ? "Adding…" : "Add account"}</button>
         </div>
       </form>
