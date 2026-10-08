@@ -1,11 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { io } from "socket.io-client";
 
-// Messages are keyed by `uid` (stable). A message's `id` changes when it is
-// archived (deleted/gone), so never key on `id`. Messages do NOT expire or
-// disappear on their own — preserved chats keep everything, including deleted
-// ones (shown struck through with a bin). Mirror-only chats just drop whatever
-// Snapchat drops, via message:removed.
+// Messages are keyed by stable `uid`; deletion state does not erase archived content.
 const initial = {
   accounts: [],
   status: {}, // accountId -> { status, error }
@@ -147,8 +143,6 @@ export function useBackend(settings, { onMessage }) {
     s.on("message:removed", (d) => dispatch({ type: "removed", ...d }));
     s.on("activity:list", (d) => dispatch({ type: "activity:list", ...d }));
     s.on("activity", (d) => dispatch({ type: "activity", ...d }));
-    // pairs come bundled in the chats event (chat.preservation); handler kept for clarity
-    s.on("pairs", () => {});
     setSocket(s);
     return () => s.disconnect();
   }, [settings]);
