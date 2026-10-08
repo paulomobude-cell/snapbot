@@ -218,11 +218,12 @@ io.on("connection", (socket) => {
     await session.addViewer();
   }));
   socket.on("screen:stop", ack(stopWatching));
+  socket.on("screen:select-page", ack((p) => entry(p).session.selectScreenPage(p.pageId)));
   socket.on("disconnect", stopWatching);
   socket.on("screen:click", ack((p) => entry(p).session.click(Number(p.x), Number(p.y))));
   socket.on("screen:type", ack((p) => entry(p).session.type(String(p.text))));
   socket.on("screen:key", ack((p) => entry(p).session.press(String(p.key))));
-  socket.on("screen:scroll", ack((p) => entry(p).session.scroll(Number(p.deltaY))));
+  socket.on("screen:scroll", ack((p) => entry(p).session.scroll(Number(p.deltaY), Number(p.deltaX || 0))));
 });
 
 // ---- events -> clients + webhook ----
