@@ -56,16 +56,19 @@ function node(tag, {text="", classes=[], sender=null, quote=false, media=null, l
   return el;
 }
 const n=(text,legacy=false)=>node("span",{text,legacy});
-const quote=(author,quotedText,media=false)=>node("div",{quote:true,leftBorder:3},[
-  n(author),n(quotedText),...(media?[node("img",{media:"blob:quote-thumbnail"})]:[])
+const quote=(author,quotedText,media=false,semantic=true)=>node("div",{quote:semantic,leftBorder:0},[
+  n(author),node("div",{leftBorder:3},[
+    n(quotedText),...(media?[node("img",{media:"blob:quote-thumbnail"})]:[])
+  ])
 ]);
-const reply=(sender,originalAuthor,originalText,repliedText,withPreviewMedia=false)=>{
-  const q=quote(originalAuthor,originalText,withPreviewMedia);
-  return node("li",{classes:["T1yt2"],sender},[q,n(repliedText,true)]);
+const reply=(sender,originalAuthor,originalText,repliedText,withPreviewMedia=false,semantic=true)=>{
+  const q=quote(originalAuthor,originalText,withPreviewMedia,semantic);
+  // Snapchat sometimes exposes sender labels outside its quoted inset.
+  return node("li",{classes:["T1yt2"],sender},[n(sender.toUpperCase(),true),q,n(repliedText,true)]);
 };
 const me=reply("Me","ZEZE","Omo, it is well","You're in finals now right?");
 const zeze=reply("Zeze","ME","You're in finals now right?","Nahh, next year");
-const last=reply("Zeze","ME","Next month","Oh woww\nThat's so nice\nCongratulations",true);
+const last=reply("Zeze","ME","Next month","Oh woww\nThat's so nice\nCongratulations",true,false);
 const plain=node("li",{classes:["T1yt2"],sender:"Me"},[n("How's school?",true)]);
 const root=node("div",{},[plain,me,zeze,last]);
 const beforeDoc=globalThis.document, beforeStyle=globalThis.getComputedStyle;
