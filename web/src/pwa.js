@@ -18,13 +18,13 @@ export function setupPWA(appName) {
   let currentKind = "";
 
   const style = document.createElement("style");
-  style.textContent = \`
+  style.textContent = `
     .comnexus-pwa-notice{position:fixed;bottom:calc(16px + env(safe-area-inset-bottom,0px));right:16px;z-index:2147483000;display:flex;align-items:center;gap:12px;flex-wrap:wrap;max-width:min(380px,calc(100vw - 32px));padding:12px 14px;background:#171923;color:#f8fafc;border:1px solid #404354;border-radius:14px;box-shadow:0 12px 36px #0005;font:500 13px/1.5 system-ui,sans-serif}
     .comnexus-pwa-notice span{flex:1;min-width:150px}
     .comnexus-pwa-notice button{border:0;border-radius:9px;padding:8px 10px;background:#f8fafc;color:#111827;font:700 12px system-ui,sans-serif;cursor:pointer}
     .comnexus-pwa-notice button.pwa-dismiss{background:transparent;color:#cbd5e1;padding:6px}
     .comnexus-pwa-notice button:focus-visible{outline:2px solid #a5b4fc;outline-offset:2px}
-  \`;
+  `;
   document.head.appendChild(style);
 
   function close() {
