@@ -5,6 +5,7 @@ puppeteer.use(Stealth());
 
 import fs from "fs";
 import fsPromise from "fs/promises";
+import { discoverChats } from "./server/chat-discovery.js";
 
 function delay(time) {
   return new Promise(function (resolve) {
@@ -559,59 +560,66 @@ export default class SnapBot {
     }, userId);
   }
 
-  async userStatus() {
-    await this.page.waitForSelector(
-      "div.ReactVirtualized__Grid__innerScrollContainer"
-    );
-    const lists = await this.page.$$("div[role='listitem']");
-    const data = [];
-
-    for (const listItem of lists) {
-      const titleSpan = await listItem.$("span[id^='title-']");
-      if (titleSpan) {
-        const id = await this.page.evaluate((el) => el.id, titleSpan);
-        const name = await this.page.evaluate(
-          (el) => el.textContent.trim(),
-          titleSpan
-        );
-
-        // Get the status span container using the ID
-        const cleanedID = id.replace(/^title-/, "");
-        const statusContainer = await listItem.$(`#status-${cleanedID}`);
-        const statusParent = statusContainer
-          ? await this.page.evaluateHandle(
-              (el) => el.parentElement,
-              statusContainer
-            )
-          : null;
-        let status = [];
-
-        if (statusParent) {
-          const statusSpans = await statusParent.$$("span");
-          status = await Promise.all(
-            statusSpans.map((span) =>
-              this.page.evaluate((el) => el.textContent.trim(), span)
-            )
-          );
-        }
-        let cleanedStatus = [
-          ...new Set(
-            status
-              .map((text) => text?.trim())
-              .filter((text) => text && text !== "·")
-          ),
-        ];
-
-        let structuredStatus = {
-          type: cleanedStatus[0] || null,
-          time: cleanedStatus[1] || null,
-          streak: cleanedStatus[2] || null,
-        };
-
-        data.push({ id: cleanedID, name, status: structuredStatus });
+  // Read all virtualized chats on initial/periodic discovery, but only
+  // currently mounted rows on fast refresh. Each snapshot uses a single
+  // browser evaluate rather than stale Puppeteer element handles.
+  async userStatus({ fullScan = false } = {}) {
+    await this.page.waitForSelector("div.ReactVirtualized__Grid__innerScrollContainer");
+    const readVisible = () => this.page.evaluate(() => {
+      const data = [];
+      for (const item of document.querySelectorAll("div[role='listitem']")) {
+        const title = item.querySelector("span[id^='title-']");
+        if (!title) continue;
+        const id = title.id.replace(/^title-/, "");
+        const name = title.textContent?.trim();
+        if (!id || !name) continue;
+        const statusContainer = document.getElementById("status-" + id);
+        const status = statusContainer?.parentElement
+          ? [...statusContainer.parentElement.querySelectorAll("span")]
+            .map(span => span.textContent?.trim())
+            .filter(x => x && x !== "·")
+          : [];
+        const clean = [...new Set(status)];
+        data.push({ id, name, status: {
+          type: clean[0] || null, time: clean[1] || null, streak: clean[2] || null,
+        } });
       }
-    }
-    return data;
+      return data;
+    });
+    const evaluateScroll = fn => this.page.evaluate(fn);
+    const scrollRoot = () => {
+      const inner = document.querySelector("div.ReactVirtualized__Grid__innerScrollContainer");
+      if (!inner) return null;
+      let el = inner;
+      while (el) {
+        if (el.scrollHeight > el.clientHeight + 2 && el.clientHeight > 0) return el;
+        el = el.parentElement;
+      }
+      return inner;
+    };
+    return discoverChats({
+      readVisible,
+      getPosition: () => evaluateScroll(() => {
+        const inner = document.querySelector("div.ReactVirtualized__Grid__innerScrollContainer");
+        let el = inner;
+        while (el && !(el.scrollHeight > el.clientHeight + 2 && el.clientHeight > 0)) el = el.parentElement;
+        el ||= inner;
+        return el ? {
+          scrollTop: el.scrollTop,
+          scrollHeight: el.scrollHeight,
+          clientHeight: el.clientHeight,
+        } : null;
+      }),
+      scrollTo: top => this.page.evaluate(value => {
+        const inner = document.querySelector("div.ReactVirtualized__Grid__innerScrollContainer");
+        let el = inner;
+        while (el && !(el.scrollHeight > el.clientHeight + 2 && el.clientHeight > 0)) el = el.parentElement;
+        el ||= inner;
+        if (el) el.scrollTop = value;
+      }, top),
+      pause: time => delay(time),
+      fullScan,
+    });
   }
 
   async blockTypingNotifications(shouldBlock) {
@@ -703,8 +711,61 @@ export default class SnapBot {
   async openChat(chatId) {
     const convoSelector = `[id="cv-${chatId}"]`;
     if (await this.page.$(convoSelector)) return true;
-    const title = await this.page.$(`span[id="title-${chatId}"]`);
-    if (!title) return false;
+    let title = await this.page.$(`span[id="title-${chatId}"]`);
+    // Offscreen rows aren't mounted in Snapchat's virtualized sidebar.
+    // Reveal the requested chat by scrolling the list in bounded steps.
+    if (!title) {
+      const selector = "div.ReactVirtualized__Grid__innerScrollContainer";
+      const initial = await this.page.evaluate(sel => {
+        const inner = document.querySelector(sel);
+        let el = inner;
+        while (el && !(el.scrollHeight > el.clientHeight + 2 && el.clientHeight > 0)) el = el.parentElement;
+        return el?.scrollTop || 0;
+      }, selector);
+      await this.page.evaluate(sel => {
+        const inner = document.querySelector(sel);
+        let el = inner;
+        while (el && !(el.scrollHeight > el.clientHeight + 2 && el.clientHeight > 0)) el = el.parentElement;
+        if (el) el.scrollTop = 0;
+      }, selector);
+      await delay(120);
+      title = await this.page.$(`span[id="title-${chatId}"]`);
+      for (let step = 0; step < 160 && !title; step++) {
+        const moved = await this.page.evaluate(sel => {
+          const inner = document.querySelector(sel);
+          let el = inner;
+          while (el && !(el.scrollHeight > el.clientHeight + 2 && el.clientHeight > 0)) el = el.parentElement;
+          if (!el) return false;
+          const next = Math.min(el.scrollHeight - el.clientHeight, el.scrollTop + Math.max(120, el.clientHeight * .72));
+          if (next <= el.scrollTop + 1) return false;
+          el.scrollTop = next;
+          return true;
+        }, selector);
+        if (!moved) break;
+        await delay(95);
+        title = await this.page.$(`span[id="title-${chatId}"]`);
+      }
+      if (!title) {
+        // Could also have been above the previously viewed list position.
+        await this.page.evaluate((sel) => {
+          const inner = document.querySelector(sel);
+          let el = inner;
+          while (el && !(el.scrollHeight > el.clientHeight + 2 && el.clientHeight > 0)) el = el.parentElement;
+          if (el) el.scrollTop = 0;
+        }, selector);
+        await delay(120);
+        title = await this.page.$(`span[id="title-${chatId}"]`);
+      }
+      if (!title) {
+        await this.page.evaluate((sel, previous) => {
+          const inner = document.querySelector(sel);
+          let el = inner;
+          while (el && !(el.scrollHeight > el.clientHeight + 2 && el.clientHeight > 0)) el = el.parentElement;
+          if (el) el.scrollTop = previous;
+        }, selector, initial);
+        return false;
+      }
+    }
     await title.click();
     try {
       await this.page.waitForSelector(convoSelector, { timeout: 10000 });

@@ -22,7 +22,11 @@ jobs:
       - run: npm test
       - run: node test/login.mjs
       - run: node test/live-screen.mjs
+      - run: node test/chat-discovery.mjs
+      - run: node test/incoming-sync.mjs
       - run: npm ci
+        working-directory: web
+      - run: node scripts/conversation-smoke.mjs
         working-directory: web
       - run: node scripts/backend-url-smoke.mjs
         working-directory: web
