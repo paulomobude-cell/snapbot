@@ -25,6 +25,7 @@ jobs:
       - run: node test/chat-reader.mjs
       - run: node test/chat-discovery.mjs
       - run: node test/incoming-sync.mjs
+      - run: node test/passive-media.mjs
       - run: npm ci
         working-directory: web
       - run: node scripts/conversation-smoke.mjs
