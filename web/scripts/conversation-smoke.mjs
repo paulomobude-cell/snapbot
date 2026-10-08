@@ -5,4 +5,7 @@ const msgs=[{uid:"1",from:"Alex",isMe:false},{uid:"2",from:"Alex",isMe:false},{u
 const g=group(msgs);
 assert.deepEqual(g.map(x=>x.messages.map(m=>m.uid)),[["1","2"],["3"],["4"]]);
 assert.deepEqual(g.map(x=>x.isMe),[false,true,false]);
+const withStatus = group([{uid:"a",from:"Sam",kind:"text",text:"hi"}, {uid:"b",from:"Sam",kind:"status",text:"Sam saved a video"}, {uid:"c",from:"Sam",kind:"text",text:"next"}]);
+assert.deepEqual(withStatus.map(g=>g.messages.length),[1,1,1]);
+assert.equal(withStatus[1].isStatus,true);
 console.log("Conversation grouping smoke tests passed.");
