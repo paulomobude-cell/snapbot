@@ -193,11 +193,9 @@ export default class MessageStore extends EventEmitter {
     return out;
   }
 
-  // Reconciles a fresh scrape of a chat with the archive. Returns Map(id -> item)
-  // of what's live. When `preserve` is false (the default — not a consented pair),
-  // messages that leave Snapchat are DROPPED, not kept: the chat is only mirrored,
-  // never archived. When true, they're kept as deleted/gone.
-  sync(chatId, items, { preserve = false } = {}) {
+  // Reconcile visible chat messages with the local archive.
+  // Messages removed from Snapchat remain available as deleted/gone.
+  sync(chatId, items, { preserve = true } = {}) {
     const now = Date.now();
     const live = new Map(this.sql.live.all(this.accountId, chatId).map((r) => [r.id, r]));
     const tombstones = new Set(this.sql.tombstones.all(this.accountId, chatId).map((r) => r.id));
