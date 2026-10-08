@@ -113,14 +113,6 @@ export default class AccountManager extends EventEmitter {
     store.on("media:purge", (keys) => {
       for (const key of keys) this.media.remove(key).catch(() => {});
     });
-    // peer typed the agreed code: the current sync already preserves, just refresh UI
-    session.on("pair:update", ({ chatId, pair, justAuthorized }) => {
-      if (justAuthorized) {
-        this.log(id, "status", chatId, `${pair.peerName || "chat"}: preservation authorized (peer sent the code)`);
-      }
-      this.emit("pairs", { accountId: id, pairs: store.listPairs() });
-      this.emit("chats", { accountId: id, chats: this.chatsWithPreviews(id) });
-    });
 
     session.start();
     return entry;
@@ -167,78 +159,12 @@ export default class AccountManager extends EventEmitter {
   chatsWithPreviews(id) {
     const { session, store } = this.get(id);
     const previews = store.previews();
-    const pairs = Object.fromEntries(store.listPairs().map((p) => [p.chatId, p]));
     return session.chats.map((chat) => {
-      const pair = pairs[chat.id];
       return {
         ...chat,
         preview: previews[chat.id] || null,
-        preservation: pair
-          ? { status: pair.status, method: pair.method, code: pair.status === "pending" ? pair.code : null }
-          : { status: "none" },
       };
     });
-  }
-
-  pairs(id) {
-    return this.get(id).store.listPairs();
-  }
-
-  // a short, unambiguous code the peer types back to prove they consent
-  makeCode() {
-    const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
-    let s = "";
-    for (const b of crypto.randomBytes(6)) s += alphabet[b % alphabet.length];
-    return `SNAP-${s}`;
-  }
-
-  // is this chat's peer another account the same user owns?
-  matchOwnAccount(id, chat) {
-    if (!chat) return null;
-    const norm = (s) => String(s || "").trim().toLowerCase();
-    const candidates = [norm(chat.id), norm(chat.name)];
-    for (const [otherId, { account }] of this.entries) {
-      if (otherId === id) continue;
-      if (account.username && candidates.includes(norm(account.username))) return account;
-    }
-    return null;
-  }
-
-  // Start preservation for a chat. If the peer is another of your own accounts it
-  // turns on at once (linked). Otherwise it stays pending until the peer sends the
-  // code — that reply is the other person's consent.
-  requestHandshake(id, chatId) {
-    const { store, session } = this.get(id);
-    const chat = session.chats.find((c) => c.id === chatId);
-    const peerName = chat?.name || chatId;
-    const linked = this.matchOwnAccount(id, chat);
-    if (linked) {
-      const pair = store.authorizePair(chatId, "linked");
-      this.log(id, "status", chatId, `${peerName}: preservation on (linked to your account "${linked.label}")`);
-      this.afterPairChange(id, chatId, { resync: true });
-      return { ...pair, linkedTo: linked.label };
-    }
-    const pair = store.requestPair(chatId, peerName, this.makeCode());
-    this.log(id, "status", chatId, `${peerName}: handshake started, waiting for the code`);
-    this.afterPairChange(id, chatId, { resync: false });
-    return pair;
-  }
-
-  // turn preservation off and purge what was archived for that chat
-  revokeHandshake(id, chatId) {
-    const { store } = this.get(id);
-    const peer = store.getPair(chatId)?.peerName;
-    const messages = store.revokePair(chatId);
-    this.log(id, "status", chatId, `${peer || "chat"}: preservation off, archive purged`);
-    this.afterPairChange(id, chatId, { resync: false });
-    return this.withUrls(messages);
-  }
-
-  afterPairChange(id, chatId, { resync }) {
-    const { session, store } = this.get(id);
-    this.emit("pairs", { accountId: id, pairs: store.listPairs() });
-    this.emit("chats", { accountId: id, chats: this.chatsWithPreviews(id) });
-    if (resync) session.resyncChat(chatId);
   }
 
   list() {
