@@ -94,7 +94,7 @@ export default class AccountManager extends EventEmitter {
       this.emitAccounts();
     });
     session.on("chats", () => this.emit("chats", { accountId: id, chats: this.chatsWithPreviews(id) }));
-    session.on("screen:frame", (frame) => this.emit("screen:frame", { accountId: id, frame }));
+    session.on("screen:frame", (frame) => this.emit("screen:frame", { accountId: id, ...frame }));
     store.on("chat:snapshot", ({ chatId, messages }) =>
       send("chat:snapshot", async () => ({ chatId, messages: await this.withUrls(messages) }))
     );
