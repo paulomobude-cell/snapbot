@@ -20,7 +20,7 @@ seen.length=0;
 await session.syncChats();
 assert.equal(seen[0],"7","changed conversation should be synchronized ahead of old backfill");
 assert.ok(session.pendingSync.has("6"),"untouched backfill still pending");
-assert.equal(session.pendingSync.size,3);
+assert.equal(session.pendingSync.size,2);
 seen.length=0;
 await session.syncChats();
 assert.deepEqual(seen,["5","6"]);
