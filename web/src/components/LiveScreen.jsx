@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Icon, STATUS_LABEL } from "../util.jsx";
 
 // Mirrors the account's Chrome so you can log in, solve captcha or enter a 2FA code.
-export default function LiveScreen({ account, status, socket, call, onClose, toast }) {
+export default function LiveScreen({ account, status, statusError, socket, call, onClose, toast }) {
   const [frame, setFrame] = useState(null);
   const [focused, setFocused] = useState(false);
   const [creds, setCreds] = useState({ username: account.username || "", password: "", remember: account.remembered });
@@ -51,6 +51,12 @@ export default function LiveScreen({ account, status, socket, call, onClose, toa
         <button className="icon-btn" title="Restart browser" onClick={() => send("account:restart")}><Icon name="refresh" /></button>
         <button className="icon-btn" onClick={onClose} aria-label="Close"><Icon name="close" /></button>
       </header>
+
+      {statusError && (status === "needs_login" || status === "error") && (
+        <div className="alert" role="alert" style={{ margin: "8px 16px" }}>
+          {statusError} You can finish signing in directly on the live screen below.
+        </div>
+      )}
 
       <div
         className={`screen ${focused ? "focused" : ""}`}

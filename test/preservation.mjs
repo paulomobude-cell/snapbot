@@ -49,6 +49,9 @@ async function testArchive(root) {
   A.session.stopLoop();
   await A.session.syncChats();
   await A.session.syncChat("sam");
+  // First tick creates a message; the second deletes it.
+  A.session.bot.simulate();
+  await A.session.syncChat("sam");
   A.session.bot.simulate();
   await A.session.syncChat("sam");
   await A.session.syncChat("sam");
