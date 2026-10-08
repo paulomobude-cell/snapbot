@@ -85,7 +85,7 @@ export default function App() {
   const signOut = () => {
     save("snapbot:session", null);
     save("snapbot:view", null);
-    save("snapbot:unread", null);
+    if (session?.user?.id) save("snapbot:unread:" + session.user.id, null);
     setSession(null);
   };
   if (!checked) return <div className="setup"><div className="card setup-card"><span className="spinner" /> Checking Comnexus account…</div></div>;
