@@ -32,7 +32,7 @@ function toMessage(row) {
     isMe: !!row.is_me,
     text: row.text,
     // what to show: deleted ones keep their content with the bin in front
-    display: deleted ? (row.text ? `${DELETED_MARK} ${row.text}` : DELETED_MARK) : row.text,
+    display: row.text,
     time: row.time,
     ord: row.ord,
     state: row.state,
@@ -95,19 +95,7 @@ export default class MessageStore extends EventEmitter {
       addTombstone: q(`INSERT OR REPLACE INTO tombstones (account_id, id, chat_id, at) VALUES (?, ?, ?, ?)`),
       removeTombstone: q(`DELETE FROM tombstones WHERE account_id = ? AND id = ?`),
       pruneTombstones: q(`DELETE FROM tombstones WHERE account_id = ? AND at < ?`),
-      // pairs (consent gate)
-      getPair: q(`SELECT * FROM pairs WHERE account_id = ? AND chat_id = ?`),
-      allPairs: q(`SELECT * FROM pairs WHERE account_id = ?`),
-      authorizedIds: q(`SELECT chat_id FROM pairs WHERE account_id = ? AND status = 'authorized'`),
-      pendingPairs: q(`SELECT * FROM pairs WHERE account_id = ? AND status = 'pending'`),
-      upsertPair: q(`INSERT INTO pairs
-        (account_id, chat_id, peer_name, status, method, code, requested_at, authorized_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(account_id, chat_id) DO UPDATE SET
-          peer_name=excluded.peer_name, status=excluded.status, method=excluded.method,
-          code=excluded.code, requested_at=excluded.requested_at, authorized_at=excluded.authorized_at`),
-      deletePair: q(`DELETE FROM pairs WHERE account_id = ? AND chat_id = ?`),
-      // per-chat purge (on revoke)
+      // archived-message cleanup
       chatMediaKeys: q(`SELECT storage_key FROM media WHERE account_id = ? AND storage_key IS NOT NULL
         AND message_uid IN (SELECT uid FROM messages WHERE account_id = ? AND chat_id = ?)`),
       removeChatMedia: q(`DELETE FROM media WHERE account_id = ? AND message_uid IN
@@ -136,7 +124,6 @@ export default class MessageStore extends EventEmitter {
       clearMessages: q(`DELETE FROM messages WHERE account_id = ?`),
       clearMedia: q(`DELETE FROM media WHERE account_id = ?`),
       clearTombstones: q(`DELETE FROM tombstones WHERE account_id = ?`),
-      clearPairs: q(`DELETE FROM pairs WHERE account_id = ?`),
     };
     this.sweep();
   }
@@ -319,67 +306,6 @@ export default class MessageStore extends EventEmitter {
     return { seen, added, preserve };
   }
 
-  // ---- consent pairs ----
-
-  getPair(chatId) {
-    const row = this.sql.getPair.get(this.accountId, chatId);
-    return row
-      ? { chatId: row.chat_id, peerName: row.peer_name, status: row.status, method: row.method,
-          code: row.code, requestedAt: row.requested_at, authorizedAt: row.authorized_at }
-      : null;
-  }
-
-  listPairs() {
-    return this.sql.allPairs.all(this.accountId).map((row) => ({
-      chatId: row.chat_id, peerName: row.peer_name, status: row.status,
-      method: row.method, code: row.code, requestedAt: row.requested_at, authorizedAt: row.authorized_at,
-    }));
-  }
-
-  isAuthorized(chatId) {
-    return this.sql.getPair.get(this.accountId, chatId)?.status === "authorized";
-  }
-
-  authorizedIds() {
-    return new Set(this.sql.authorizedIds.all(this.accountId).map((r) => r.chat_id));
-  }
-
-  pendingPairs() {
-    return this.sql.pendingPairs.all(this.accountId);
-  }
-
-  requestPair(chatId, peerName, code) {
-    this.sql.upsertPair.run(this.accountId, chatId, peerName || null, "pending", "code", code, Date.now(), null);
-    return this.getPair(chatId);
-  }
-
-  authorizePair(chatId, method = "code") {
-    const existing = this.sql.getPair.get(this.accountId, chatId);
-    this.sql.upsertPair.run(
-      this.accountId, chatId, existing?.peer_name || null, "authorized", method, null,
-      existing?.requested_at || Date.now(), Date.now()
-    );
-    return this.getPair(chatId);
-  }
-
-  // Withdrawing consent purges everything preserved for that chat; the archived
-  // (deleted/gone) messages and their media are removed, mirroring resumes.
-  revokePair(chatId) {
-    const keys = this.sql.chatArchivedMediaKeys.all(this.accountId, this.accountId, chatId).map((r) => r.storage_key);
-    const archived = this.sql.page.all(this.accountId, chatId, Number.MAX_VALUE, 100000)
-      .filter((r) => r.state !== "live");
-    this.tx(() => {
-      this.sql.removeChatArchivedMedia.run(this.accountId, this.accountId, chatId);
-      this.sql.removeChatArchived.run(this.accountId, chatId);
-      this.sql.removeChatTombstones.run(this.accountId, chatId);
-      this.sql.deletePair.run(this.accountId, chatId);
-    });
-    for (const r of archived) this.emit("message:removed", { id: r.id, uid: r.uid, chatId });
-    const orphaned = [...new Set(keys)].filter((k) => this.sql.keyInUse.get(k).n === 0);
-    if (orphaned.length) this.emit("media:purge", orphaned);
-    return this.getMessages(chatId);
-  }
-
   // ---- media ----
 
   addMedia(messageUid, { kind, viewOnce }) {
@@ -451,7 +377,6 @@ export default class MessageStore extends EventEmitter {
       this.sql.clearMedia.run(this.accountId);
       this.sql.clearMessages.run(this.accountId);
       this.sql.clearTombstones.run(this.accountId);
-      this.sql.clearPairs.run(this.accountId);
     });
     if (keys.length) this.emit("media:purge", [...new Set(keys)]);
   }
