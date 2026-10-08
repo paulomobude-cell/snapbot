@@ -1,5 +1,6 @@
 import { EventEmitter } from "events";
 import fs from "fs";
+import { validateBackfillSelection } from "./backfill-selection.js";
 import path from "path";
 import crypto from "crypto";
 import SnapBot from "../snapbot.js";
@@ -40,6 +41,7 @@ export default class Session extends EventEmitter {
     this.sidebarDirty = false;
     this.lastSidebarSignal = 0;
     this.lastStatus = new Map(); // chatId -> status string, to spot new activity
+    this.backfill = null;
     this.screencast = null;
     this.viewers = 0;
     this.screenTimer = null;
@@ -250,6 +252,10 @@ export default class Session extends EventEmitter {
 
   async tick() {
     if (this.status !== "connected" || this.syncRunning) return;
+    if (this.backfill?.status === "running") {
+      this.scheduleLoop(1000);
+      return;
+    }
     this.syncRunning = true;
     this.sidebarDirty = false;
     try {
@@ -276,7 +282,9 @@ export default class Session extends EventEmitter {
     // conversations as the virtualized viewport changes. Keep newest visible
     // status information while retaining the rest of the known chat list.
     const merged = new Map(this.chats.map(chat => [chat.id, chat]));
-    for (const chat of visible) merged.set(chat.id, chat);
+    for (const chat of visible) merged.set(chat.id, {
+      ...chat, statusSource: "snapchat-web", observedAt: Date.now(),
+    });
     const chats = [...merged.values()];
     this.chats = chats;
     this.emit("chats", chats);
@@ -311,7 +319,9 @@ export default class Session extends EventEmitter {
     }
   }
 
-  async syncChat(chatId, { interactive = false } = {}) {
+  async syncChat(chatId, { interactive = false, fromBackfill = false } = {}) {
+    if (interactive && this.backfill?.status === "running" && !fromBackfill)
+      throw new Error("Archive job running. Wait or cancel it first.");
     const chat = this.chats.find((c) => c.id === chatId);
     if (!chat) return { captured: false, reason: "Chat not discovered" };
     const items = await this.run(async () => {
@@ -329,6 +339,75 @@ export default class Session extends EventEmitter {
     const { seen } = this.store.sync(chatId, items, { preserve: true, reconcileMissing: false });
     await this.captureMedia(chatId, seen, buffers, { allowNetwork: interactive });
     return { captured: true, messageCount: this.store.getMessages(chatId).filter(m => m.kind !== "status").length };
+  }
+
+  getBackfill() {
+    if (!this.backfill) return null;
+    const { id, status, total, completed, captured, failed, currentChatId,
+      errors, cancelRequested, startedAt, finishedAt } = this.backfill;
+    return { id, status, total, completed, captured, failed, currentChatId,
+      errors: [...errors], cancelRequested, startedAt, finishedAt };
+  }
+
+  publishBackfill() {
+    this.emit("backfill:progress", this.getBackfill());
+  }
+
+  startBackfill(chatIds, { confirmReadRisk = false } = {}) {
+    if (this.status !== "connected") throw new Error("Snapchat session is not connected.");
+    if (this.backfill?.status === "running") throw new Error("An archive job is already running.");
+    if (confirmReadRisk !== true) throw new Error("You must confirm the risk of read receipts.");
+    // Only these explicitly approved IDs are visited. No read-state guesses.
+    const ids = validateBackfillSelection(chatIds, this.chats);
+    this.backfill = {
+      id: crypto.randomUUID(), status: "running", total: ids.length, completed: 0,
+      captured: 0, failed: 0, currentChatId: null, errors: [],
+      cancelRequested: false, startedAt: Date.now(), finishedAt: null,
+    };
+    const job = this.backfill;
+    this.publishBackfill();
+    void this.runSelectedBackfill(job, ids);
+    return this.getBackfill();
+  }
+
+  cancelBackfill() {
+    if (this.backfill?.status === "running") {
+      this.backfill.cancelRequested = true;
+      this.publishBackfill();
+    }
+    return this.getBackfill();
+  }
+
+  async runSelectedBackfill(job, ids) {
+    try {
+      for (const chatId of ids) {
+        if (job.cancelRequested || this.status !== "connected") break;
+        job.currentChatId = chatId;
+        this.publishBackfill();
+        try {
+          const result = await this.syncChat(chatId, { interactive: true, fromBackfill: true });
+          if (result.captured) job.captured++;
+          else {
+            job.failed++;
+            job.errors.push({ chatId, error: result.reason || "Conversation not rendered" });
+          }
+        } catch (error) {
+          job.failed++;
+          job.errors.push({ chatId, error: String(error.message || error).slice(0,180) });
+        }
+        job.completed++;
+        this.publishBackfill();
+        if (!job.cancelRequested) await delay(200);
+      }
+    } catch (error) {
+      job.failed++;
+      job.errors.push({ chatId: job.currentChatId, error: String(error.message || error).slice(0,180) });
+    } finally {
+      job.status = job.cancelRequested || this.status !== "connected" ? "cancelled" : "completed";
+      job.currentChatId = null;
+      job.finishedAt = Date.now();
+      this.publishBackfill();
+    }
   }
 
   // decrypts chat media into buffers keyed by content hash; tags each item with
@@ -428,6 +507,7 @@ export default class Session extends EventEmitter {
 
   async sendMessage(chatId, text) {
     if (this.status !== "connected") throw new Error("Session not connected");
+    if (this.backfill?.status === "running") throw new Error("Selected-chat archive running. Wait or cancel before sending.");
     await this.run(async () => {
       if (!(await this.bot.openChat(chatId))) throw new Error("Chat not found");
       await this.bot.typeMessage(text);
@@ -437,6 +517,7 @@ export default class Session extends EventEmitter {
   }
 
   async logout() {
+    this.cancelBackfill();
     this.stopLoop();
     try {
       await this.run(() => this.bot.logout());
@@ -456,6 +537,7 @@ export default class Session extends EventEmitter {
   }
 
   async stop() {
+    this.cancelBackfill();
     this.stopLoop();
     this.setStatus("stopped");
     await this.stopScreencast();
