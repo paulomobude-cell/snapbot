@@ -238,9 +238,11 @@ function webhook(event, data) {
 }
 
 accounts.on("accounts", (list) => io.emit("accounts", list));
-accounts.on("screen:frame", ({ accountId, frame }) =>
-  io.to(`screen:${accountId}`).volatile.emit("screen:frame", { accountId, frame })
-);
+// Forward dimensions and page metadata too; stripping them breaks the tab
+// switcher (needed for OAuth) and fullscreen resolution indicator.
+accounts.on("screen:frame", (data) => {
+  io.to(`screen:${data.accountId}`).volatile.emit("screen:frame", data);
+});
 for (const event of ["chats", "chat:snapshot", "activity"]) {
   accounts.on(event, (data) => io.emit(event, data));
 }

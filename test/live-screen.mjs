@@ -32,6 +32,12 @@ session.on("screen:frame", (d) => frames.push(d));
 
 await session.addViewer();
 assert.equal(frames.at(-1).pages.length, 1);
+assert.equal(frames.at(-1).width, 1920, "frame has native HD width");
+assert.equal(frames.at(-1).height, 1080, "frame has native HD height");
+assert.equal(frames.at(-1).quality, 86, "HD JPEG is the quality default");
+const firstFrames = frames.length;
+await session.pushScreenFrame();
+assert.equal(frames.length, firstFrames, "unchanged frames should not be retransmitted");
 assert.equal(frames.at(-1).pages[0].site, "accounts.snapchat.com");
 await session.click(.5, .25);
 assert.ok(calls.includes("accounts.snapchat.com:click:960,270"));

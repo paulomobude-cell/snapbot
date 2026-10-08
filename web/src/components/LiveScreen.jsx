@@ -8,6 +8,8 @@ export default function LiveScreen({ account, status, statusError, socket, call,
   const [focused, setFocused] = useState(false);
   const [zoom, setZoom] = useState(() => window.innerWidth < 760 ? 2.2 : 1.3);
   const [expanded, setExpanded] = useState(false);
+  const [nativeFullscreen, setNativeFullscreen] = useState(false);
+  const fullscreenRef = useRef(null);
   const [remoteText, setRemoteText] = useState("");
   const [privateText, setPrivateText] = useState(false);
   const [sendingText, setSendingText] = useState(false);
@@ -16,10 +18,39 @@ export default function LiveScreen({ account, status, statusError, socket, call,
   });
   const [busy, setBusy] = useState(false);
   const viewportRef = useRef(null);
+
+  useEffect(() => {
+    const update = () => {
+      const active = document.fullscreenElement === fullscreenRef.current;
+      setNativeFullscreen(active);
+      if (!document.fullscreenElement) setExpanded(false);
+    };
+    document.addEventListener("fullscreenchange", update);
+    return () => document.removeEventListener("fullscreenchange", update);
+  }, []);
+
+  const toggleFullscreen = async () => {
+    const element = fullscreenRef.current;
+    if (!element) return;
+    if (document.fullscreenElement === element) {
+      await document.exitFullscreen().catch(() => {});
+      setExpanded(false);
+      return;
+    }
+    // iOS Safari may not expose requestFullscreen on ordinary elements.
+    // The fixed-position expanded view stays available as a fallback.
+    if (expanded) { setExpanded(false); return; }
+    setExpanded(true);
+    setZoom(1);
+    if (element.requestFullscreen) {
+      try { await element.requestFullscreen(); }
+      catch { /* fallback: expanded fixed-position view */ }
+    }
+  };
   const accountId = account.id;
 
   useEffect(() => {
-    setScreen({ frame: null, pages: [], pageId: null });
+    setScreen({ frame: null, pages: [], pageId: null, width: null, height: null, quality: null });
     if (!socket) return;
     const onFrame = (data) => {
       if (data.accountId !== accountId) return;
@@ -27,6 +58,9 @@ export default function LiveScreen({ account, status, statusError, socket, call,
         frame: data.frame,
         pages: data.pages || [],
         pageId: data.pageId || null,
+        width: data.width || null,
+        height: data.height || null,
+        quality: data.quality || null,
       });
     };
     const start = () => socket.emit("screen:start", { accountId });
@@ -91,14 +125,14 @@ export default function LiveScreen({ account, status, statusError, socket, call,
 
   const needsLogin = ["needs_login", "error", "stopped"].includes(status);
   return (
-    <div className={`panel-inner live-browser ${expanded ? "live-browser-expanded" : ""}`}>
+    <div ref={fullscreenRef} className={`panel-inner live-browser ${expanded ? "live-browser-expanded" : ""}`}>
       <header className="panel-head">
         <strong>Interactive browser</strong>
         <span className={`pill ${status}`}>{STATUS_LABEL[status] || status}</span>
         <div className="spacer" />
-        <button className="icon-btn" title={expanded ? "Exit expanded view" : "Expand browser"}
-          onClick={() => setExpanded((value) => !value)}
-          aria-label={expanded ? "Exit expanded view" : "Expand browser"}>
+        <button className="icon-btn" title={expanded ? "Exit fullscreen" : "Fullscreen browser"}
+          onClick={() => void toggleFullscreen()}
+          aria-label={expanded ? "Exit fullscreen" : "Fullscreen browser"}>
           {expanded ? "↙" : "⛶"}
         </button>
         <button className="icon-btn" title="Restart Chromium" onClick={() => void send("account:restart").catch(() => {})}>
@@ -131,8 +165,10 @@ export default function LiveScreen({ account, status, statusError, socket, call,
       <div className="screen-toolbar" role="group" aria-label="Remote screen zoom controls">
         <button className="btn small" type="button" disabled={zoom <= 1} onClick={() => setZoom((v) => Math.max(1, +(v - 0.4).toFixed(1)))}>−</button>
         <span className="muted small">{Math.round(zoom * 100)}% zoom</span>
+        {screen.width && screen.height && <span className="muted small" aria-label="Remote browser capture resolution">{screen.width}×{screen.height} · HD JPEG</span>}
         <button className="btn small" type="button" disabled={zoom >= 4} onClick={() => setZoom((v) => Math.min(4, +(v + 0.4).toFixed(1)))}>+</button>
         <button className="btn small" type="button" onClick={() => setZoom(1)}>Fit</button>
+        <button className="btn small" type="button" onClick={() => void toggleFullscreen()}>{nativeFullscreen ? "Exit fullscreen" : expanded ? "Return to panel" : "Fullscreen"}</button>
         <span className="muted small">Click a field on the screen, then type below.</span>
       </div>
 
