@@ -35,7 +35,7 @@ const config = {
   // the bot opens chats to mirror them and lets normal read receipts go through,
   // like an ordinary client. (Not used to hide reads.)
   blockedRequests: list(env.BLOCKED_REQUESTS),
-  // media capture, for consented pairs only
+  // capture media accessible to the signed-in account
   captureSnaps: env.CAPTURE_SNAPS !== "false",
   snapsPerSync: Number(env.SNAPS_PER_SYNC || 3),
   mediaUrlTtl: Number(env.MEDIA_URL_TTL_SECONDS || 6 * 3600),
@@ -81,17 +81,11 @@ if (fs.existsSync(legacyProfile) && db.prepare("SELECT COUNT(*) AS n FROM accoun
   fs.rmSync(path.join(config.dataDir, "messages.json"), { force: true });
 }
 
-function validToken(token) {
-  const a = Buffer.from(String(token || ""));
-  const b = Buffer.from(config.apiToken);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
 // ---- REST ----
 
 const app = express();
 app.use(cors({ origin: config.corsOrigin }));
-app.use(express.json());
+app.use(express.json({ limit: "32kb" }));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
@@ -183,7 +177,7 @@ const handle = (fn) => async (req, res) => {
   try {
     res.json((await fn(req)) ?? { ok: true });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    res.status(error.statusCode || 400).json({ error: error.message });
   }
 };
 const owned = req => accounts.owned(req.tenant.id, req.params.id);
