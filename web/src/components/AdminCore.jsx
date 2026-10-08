@@ -14,6 +14,7 @@ export default function AdminCore({ backend, onClose, toast }) {
   const [overview, setOverview] = useState(null);
   const [users, setUsers] = useState([]);
   const [legacy, setLegacy] = useState([]);
+  const [audit, setAudit] = useState([]);
   const [claimFor, setClaimFor] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -33,10 +34,11 @@ export default function AdminCore({ backend, onClose, toast }) {
     setLoading(true);
     setError("");
     try {
-      const [status, info] = await Promise.all([request("overview"), request("users")]);
+      const [status, info, actions] = await Promise.all([request("overview"), request("users"), request("audit")]);
       setOverview(status);
       setUsers(info.users || []);
       setLegacy(info.legacy || []);
+      setAudit(actions || []);
       setAuthenticated(true);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
@@ -115,9 +117,17 @@ export default function AdminCore({ backend, onClose, toast }) {
         {users.length === 0 ? <p className="muted">No users yet.</p> : users.map(u =>
           <div className="admin-user" key={u.id}>
             <div className="row wrap"><strong>{u.phone}</strong><span className="muted small">Joined {new Date(u.created_at).toLocaleDateString()}</span></div>
-            <p className="muted small">{u.accounts.length} Snapchat account(s)</p>
+            <p className="muted small">{u.accounts.length} Snapchat account(s) · {u.usage?.archived || 0} archived messages · {bytes(u.usage?.mediaBytes)} stored media</p>
             {u.accounts.map(a => <p className="small" key={a.id}>{a.label} · {a.status} · {a.username || "No username"}</p>)}
             <button className="btn danger small" onClick={() => void removeUser(u)}>Delete user and all their accounts</button>
+          </div>)}
+      </section>
+      <section className="card admin-section stack">
+        <h2>Recent admin operations</h2>
+        {audit.length === 0 ? <p className="muted small">No administrative changes recorded.</p> : audit.map((item, i) =>
+          <div className="admin-line" key={i}><strong>{item.action}</strong>
+            <span className="muted small">{item.target || "—"}</span>
+            <span className="muted small">{new Date(item.at).toLocaleString()}</span>
           </div>)}
       </section>
     </main>}
