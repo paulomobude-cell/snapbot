@@ -202,6 +202,9 @@ function Dashboard({ settings, user, onDisconnect }) {
             <button className={`icon-btn ${panel === "screen" ? "on" : ""}`} title="Live screen" onClick={() => setPanel(panel === "screen" ? null : "screen")}><Icon name="screen" /></button>
             <button className={`icon-btn ${panel === "activity" ? "on" : ""}`} title="Activity" onClick={() => setPanel(panel === "activity" ? null : "activity")}><Icon name="activity" /></button>
             <button className={`icon-btn ${notify ? "on" : ""}`} title={notify ? "Notifications on" : "Notifications off"} onClick={toggleNotify}><Icon name="bell" /></button>
+            <button className="icon-btn" title="Copy my personal Comnexus API key" aria-label="Copy my personal Comnexus API key"
+              onClick={() => navigator.clipboard?.writeText(settings.token).then(() => toast("Personal API key copied", "success"))
+                .catch(() => toast("Clipboard unavailable", "error"))}><Icon name="copy" /></button>
             <button className="icon-btn" title="Comnexus Admin Core" aria-label="Comnexus Admin Core" onClick={() => setAdminOpen(true)}><Icon name="shield" /></button>
             <button className="icon-btn" title="Sign out of Comnexus" aria-label="Sign out of Comnexus" onClick={onDisconnect}><Icon name="logout" /></button>
             <button className="icon-btn" title="Theme" onClick={() => setTheme(theme === "dark" ? "light" : theme === "light" ? "system" : "dark")}>
