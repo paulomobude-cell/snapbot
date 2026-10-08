@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openDb, createCipher } from "../server/db.js";
+import { DatabaseSync } from "node:sqlite";
 import { TenantAuth } from "../server/tenant-auth.js";
 import AccountManager from "../server/accounts.js";
 import MediaStorage from "../server/media.js";
@@ -22,8 +23,15 @@ try {
     (account_id,id,uid,chat_id,kind,from_name,is_me,text,time,ord,state,first_seen_at)
     VALUES (?, 'old', 'legacy-uid', 'chat', 'text', 'Friend', 0, 'old archived chat', 'now', 1, 'gone', ?)`)
     .run(legacyId, Date.now());
+  // Emulate a pre-Comnexus installation so migration must snapshot its DB.
+  db.exec("PRAGMA foreign_keys=OFF; DROP TABLE user_sessions; DROP TABLE app_users; PRAGMA foreign_keys=ON;");
   db.close();
   db = openDb(dir);
+  const backups = fs.readdirSync(path.join(dir, "backups")).filter(name => name.startsWith("snapbot-pre-comnexus-"));
+  check("legacy migration creates an atomic SQLite backup", backups.length === 1);
+  const snapshot = new DatabaseSync(path.join(dir, "backups", backups[0]));
+  check("pre-migration snapshot contains saved archive", snapshot.prepare("SELECT text FROM messages WHERE account_id=?").get(legacyId).text === "old archived chat");
+  snapshot.close();
 
   check("pre-existing archives are retained", db.prepare("SELECT text FROM messages WHERE account_id=?").get(legacyId).text === "old archived chat");
   check("legacy Snapchat sessions are unclaimed", db.prepare("SELECT owner_user_id FROM accounts WHERE id=?").get(legacyId).owner_user_id === null);
