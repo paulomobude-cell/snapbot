@@ -42,9 +42,12 @@ assert.equal(shouldFollowTail(oldIds,[...oldIds,"new"],true),true);
 assert.equal(shouldFollowTail(oldIds,[...oldIds,"new"],false),false,
   "user scrolling older history disables automatic jump");
 const previousView={anchorUid:"video",anchorOffset:80,scrollTop:350,atBottom:false};
-assert.equal(chooseScrollTop({previous:previousView,currentAnchorOffset:280,
+assert.equal(chooseScrollTop({previous:previousView,currentScrollTop:350,currentAnchorOffset:280,
   afterIds:["history",...oldIds],beforeIds:oldIds,newScrollHeight:3200}),550,
   "keep the same visible bubble at the same screen offset");
+assert.equal(chooseScrollTop({previous:previousView,currentScrollTop:550,currentAnchorOffset:80,
+  afterIds:["history",...oldIds],beforeIds:oldIds,newScrollHeight:3200}),550,
+  "native scroll anchoring already compensated; never pull user back up again");
 assert.equal(chooseScrollTop({previous:previousView,currentAnchorOffset:80,
   afterIds:[...oldIds,"new"],beforeIds:oldIds,newScrollHeight:3200}),350,
   "append during manual reading must preserve position");

@@ -47,7 +47,8 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
       : null;
     const offset = anchor ? anchor.getBoundingClientRect().top - el.getBoundingClientRect().top : null;
     const desired = chooseScrollTop({
-      previous, currentAnchorOffset: offset, newScrollHeight: el.scrollHeight,
+      previous, currentScrollTop: el.scrollTop, currentAnchorOffset: offset,
+      newScrollHeight: el.scrollHeight,
       afterIds: ids, beforeIds: previousIdsRef.current,
       forceLatest: forceLatestRef.current,
     });
