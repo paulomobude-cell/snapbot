@@ -606,3 +606,27 @@ video.media { cursor: default; }
 .reply-preview-from { font-weight: 700; font-size: 11px; }
 .reply-preview-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; opacity: .85; }
 .reply-preview-media { font-size: 11px; opacity: .7; }
+
+/* Stable media geometry and message keys prevent backfill from jumping the
+   viewer or remounting a playing <video> after snapshot refreshes. */
+.messages { overflow-anchor: auto; overscroll-behavior-y: contain; }
+.message-entry { margin: 2px 0; }
+.message-entry.first-in-run { margin-top: 12px; }
+.message-entry .bubble-row { transition: none; }
+.media-wrap {
+  width: min(320px, 70vw);
+  aspect-ratio: 4 / 5;
+  max-height: 360px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: #121319;
+  vertical-align: top;
+}
+.media-wrap .media {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+  display: block;
+}

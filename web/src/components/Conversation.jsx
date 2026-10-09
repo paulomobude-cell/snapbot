@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Avatar, Icon } from "../util.jsx";
 import { Empty } from "./ChatList.jsx";
-import { group } from "../message-groups.js";
+import { stableMessageRows } from "../message-groups.js";
+import { chooseScrollTop } from "../scroll-behavior.js";
 
 export default function Conversation({ chat, status, messages, now, onBack, onSend, onCopy, onOpenScreen, onInteractiveSync, onBackfill, clickMode, toast }) {
   const [pending, setPending] = useState([]);
@@ -9,17 +10,61 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
   const listRef = useRef(null);
   const [atBottom, setAtBottom] = useState(true);
   const [missed, setMissed] = useState(0);
-  const lastCount = useRef(0);
+  const beforeRenderRef = useRef(null);
+  const previousIdsRef = useRef([]);
+  const forceLatestRef = useRef(false);
+  const previousLengthRef = useRef(0);
+
+  // Take a picture of what the user was actually looking at before React
+  // commits a changing chat history. Server backfill can insert items ABOVE
+  // that point, while media may be finishing at the same time.
+  const captureViewport = (el) => {
+    const top = el.getBoundingClientRect().top;
+    let anchor = null;
+    for (const candidate of el.querySelectorAll("[data-message-uid]")) {
+      if (candidate.getBoundingClientRect().bottom > top + 2) {
+        anchor = candidate;
+        break;
+      }
+    }
+    return {
+      anchorUid: anchor?.dataset.messageUid || null,
+      anchorOffset: anchor ? anchor.getBoundingClientRect().top - top : null,
+      scrollTop: el.scrollTop,
+      atBottom: el.scrollHeight - el.scrollTop - el.clientHeight < 48,
+    };
+  };
 
   useLayoutEffect(() => {
     const el = listRef.current;
     if (!el) return;
-    const total = messages.length + pending.length;
-    const grew = total > lastCount.current;
-    if (atBottom) el.scrollTop = el.scrollHeight;
-    else if (grew) setMissed((n) => n + (total - lastCount.current));
-    lastCount.current = total;
-  }, [messages.length, pending.length]);
+    const ids = messages.map(m => m.uid || m.id);
+    const previous = beforeRenderRef.current;
+    const anchor = previous?.anchorUid
+      ? [...el.querySelectorAll("[data-message-uid]")].find(
+          node => node.dataset.messageUid === previous.anchorUid
+        )
+      : null;
+    const offset = anchor ? anchor.getBoundingClientRect().top - el.getBoundingClientRect().top : null;
+    const desired = chooseScrollTop({
+      previous, currentAnchorOffset: offset, newScrollHeight: el.scrollHeight,
+      afterIds: ids, beforeIds: previousIdsRef.current,
+      forceLatest: forceLatestRef.current,
+    });
+    if (Math.abs(desired - el.scrollTop) > 1) el.scrollTop = desired;
+    const newMessageCount = Math.max(0, messages.length - previousLengthRef.current);
+    if (previous && !previous.atBottom && newMessageCount && !forceLatestRef.current)
+      setMissed(n => n + newMessageCount);
+    previousIdsRef.current = ids;
+    previousLengthRef.current = messages.length;
+    forceLatestRef.current = false;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    setAtBottom(nearBottom);
+    if (nearBottom) setMissed(0);
+    // React's layout-effect cleanup runs before the DOM is replaced, allowing
+    // us to anchor the same visible bubble when old history is inserted.
+    return () => { beforeRenderRef.current = captureViewport(el); };
+  }, [messages, pending.length]);
 
   if (!chat) {
     return (
@@ -32,6 +77,7 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
   const send = async (text) => {
     const tempId = `tmp-${Date.now()}-${Math.random()}`;
     setPending((p) => [...p, { tempId, text, state: "sending" }]);
+    forceLatestRef.current = true; // the user deliberately sent a message
     setAtBottom(true);
     try {
       await onSend(text);
@@ -42,7 +88,7 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
   };
 
   const actualMessages = messages.filter(message => message.kind !== "status" && message.kind !== "notice");
-  const groups = group(messages);
+  const rows = stableMessageRows(messages);
   const offline = status !== "connected";
   const preserved = true;
 
@@ -82,7 +128,8 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
         ref={listRef}
         onScroll={(e) => {
           const el = e.currentTarget;
-          const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+          const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+          beforeRenderRef.current = captureViewport(el);
           setAtBottom(bottom);
           if (bottom) setMissed(0);
         }}
@@ -92,17 +139,14 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
             text="Passive mode only saves conversations already visible in Snapchat Web. A fresh account has no history until you open a chat in Live Screen or explicitly archive selected chats."
           ><button className="btn small" onClick={onBackfill}>Choose chats to archive</button></Empty>
         )}
-        {groups.map((g) => (
-          <div key={g.key}>
-            {g.time && <div className="day-sep"><span>{g.time}</span></div>}
-            <div className={`group ${g.isStatus ? "statuses" : g.isMe ? "me" : "them"}`}>
-              {!g.isMe && g.messages.some(m => m.kind !== "status") && <div className="group-from">{g.from}</div>}
-              {g.messages.map((m) => (
-                m.kind === "status" || m.kind === "notice"
-                  ? <div className="chat-status-event" key={m.uid}>{m.text}</div>
-                  : <Bubble key={m.uid} m={m} onCopy={onCopy} />
-              ))}
-            </div>
+        {rows.map(({ key, message: m, isStatus, isMe, from, startsGroup }) => (
+          // Key every physical message by its immutable UID. Inserting older
+          // messages must never unmount the playing videos lower in the chat.
+          <div key={key} data-message-uid={key}
+            className={`group message-entry ${startsGroup ? "first-in-run" : ""} ${isStatus ? "statuses" : isMe ? "me" : "them"}`}>
+            {startsGroup && !isMe && !isStatus && <div className="group-from">{from}</div>}
+            {isStatus ? <div className="chat-status-event">{m.text}</div>
+              : <Bubble m={m} onCopy={onCopy} />}
           </div>
         ))}
         {pending.length > 0 && (
@@ -127,7 +171,7 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
 
       {!atBottom && (
         <button className="jump" onClick={() => { listRef.current.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" }); setMissed(0); }}>
-          <Icon name="down" size={16} /> {missed > 0 ? `${missed} new` : "Latest"}
+          <Icon name="down" size={16} /> {missed > 0 ? `${missed} added` : "Latest"}
         </button>
       )}
 
@@ -176,7 +220,7 @@ function MediaView({ media }) {
   if (media.status === "pending") return <span className="media-chip">Saving {media.viewOnce ? "snap" : "media"}…</span>;
   if (media.status === "failed" || !media.url) return <span className="media-chip failed">Couldn't save {media.viewOnce ? "snap" : "media"}</span>;
   const el = media.kind === "video"
-    ? <video src={media.url} controls className="media" />
+    ? <video src={media.url} controls preload="metadata" playsInline className="media" />
     : <img src={media.url} className="media" alt="" loading="lazy" onClick={() => setOpen(true)} />;
   return (
     <div className={`media-wrap ${media.viewOnce ? "once" : ""}`}>
