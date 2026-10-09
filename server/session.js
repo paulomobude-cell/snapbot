@@ -397,11 +397,12 @@ export default class Session extends EventEmitter {
       return { captured: false, reason: readResult?.reason || "Conversation not rendered" };
     }
     const items = readResult.items;
-    const tally = { text: 0, status: 0, snap: 0, image: 0, video: 0 };
+    const tally = { text: 0, status: 0, snap: 0, image: 0, video: 0, audio: 0 };
     for (const item of items) {
       if (item.kind === "text") tally.text++;
       else if (item.kind === "notice" || item.kind === "status") tally.status++;
       else if (item.kind === "snap") tally.snap++;
+      else if (item.kind === "media" && item.mediaType === "audio") tally.audio++;
       else if (item.kind === "media" && item.mediaType === "video") tally.video++;
       else if (item.kind === "media") tally.image++;
     }
@@ -532,7 +533,10 @@ export default class Session extends EventEmitter {
   }
 
   async readBuffer(read) {
-    const media = await read().catch(() => null);
+    // Some media readers return null synchronously when the source is unavailable.
+    // Calling .catch on that value crashed the entire four-second sync loop.
+    let media;
+    try { media = await read(); } catch { return null; }
     if (!media?.base64) return null;
     const buffer = Buffer.from(media.base64, "base64");
     if (!buffer.length || buffer.length > 100 * 1024 * 1024) return null;
@@ -586,7 +590,8 @@ export default class Session extends EventEmitter {
         continue;
       }
       try {
-        const kind = read.contentType.startsWith("video/") ? "video" : "image";
+        const kind = read.contentType.startsWith("audio/") || item.mediaType === "audio" ? "audio"
+          : read.contentType.startsWith("video/") ? "video" : "image";
         const reuse = this.store.storedBySha(read.sha256);
         const key = reuse?.storageKey ||
           this.media.keyFor({ accountId: this.accountId, chatId, sha256: read.sha256, contentType: read.contentType });

@@ -39,7 +39,7 @@ try {
   const caption = el("span", "Isn't this winifred your sister?");
   caption.matches = selector => selector === "span.ogn1z";
   const legacyBubble = el("li", "");
-  legacyBubble.querySelectorAll = selector => selector === "span.ogn1z, img, video, button, [role='button']" ? [caption] : [];
+  legacyBubble.querySelectorAll = selector => selector === "span.ogn1z, img, video, audio, button, [role='button']" ? [caption] : [];
   const legacyRow = el("li", "");
   legacyRow.querySelector = () => null;
   legacyRow.querySelectorAll = selector => selector === "li" ? [legacyBubble] : [];
@@ -116,6 +116,22 @@ try {
     textContent: "No messages yet", querySelectorAll: () => [],
   }) };
   assert.deepEqual(extractVisibleMessages("friend", "Friend"), [], "explicit empty chat may return empty list");
+  // Snapchat renders voice notes as audio elements with nested sources.
+  const sound = el("audio", "");
+  sound.querySelector = selector => selector === "source" ? { src: "blob:voice-note" } : null;
+  const notice = el("span", "Not Supported on Web");
+  const loading = el("span", "Loading media...");
+  const phone = el("span", "Check from your phone to see what was sent!");
+  globalThis.document = { getElementById: id => id === "cv-friend" ? ({
+    textContent: "voice note and system placeholders",
+    querySelectorAll: selector => selector === "img, video, audio, [style*='background-image']" ? [sound] :
+      selector === "*" ? [notice, loading, phone, sound] : [],
+  }) : null };
+  const voice = extractVisibleMessages("friend", "Friend");
+  assert.equal(voice.filter(x => x.kind === "media" && x.mediaType === "audio").length, 1);
+  assert.equal(voice.find(x => x.mediaType === "audio").src, "blob:voice-note");
+  assert.equal(voice.filter(x => x.kind === "text").length, 0);
+  assert.equal(voice.filter(x => x.kind === "notice").length, 3);
   console.log("Snapchat message-reader fallbacks: text, media, timestamps, missing root and safe empty state passed");
 } finally {
   globalThis.document = doc;

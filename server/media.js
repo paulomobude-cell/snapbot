@@ -15,15 +15,19 @@ export function sniffType(buffer, fallback = "") {
   if (b.subarray(4, 8).toString() === "ftyp") {
     const brand = b.subarray(8, 12).toString();
     if (/^(heic|heix|mif1|msf1)/.test(brand)) return "image/heic";
-    return "video/mp4";
+    return /^audio\//.test(fallback) ? fallback : "video/mp4";
   }
-  if (hex.startsWith("1a45dfa3")) return "video/webm";
+  if (hex.startsWith("4f676753")) return "audio/ogg";
+  if (hex.startsWith("494433")) return "audio/mpeg";
+  if (hex.startsWith("fff3") || hex.startsWith("fffb")) return "audio/mpeg";
+  if (hex.startsWith("1a45dfa3")) return /^audio\//.test(fallback) ? fallback : "video/webm";
   return fallback && fallback !== "application/octet-stream" ? fallback : "application/octet-stream";
 }
 
 const EXT = {
   "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp",
   "image/heic": "heic", "video/mp4": "mp4", "video/webm": "webm",
+  "audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/webm": "webm", "audio/wav": "wav",
 };
 
 // Stores media in Cloudflare R2 when configured, otherwise on the data volume.

@@ -211,14 +211,16 @@ function MediaView({ media, mediaRef }) {
   const retry = () => { if (latest.current && latest.current !== src) setSrc(latest.current); };
   if (media.status === "pending") return <span className="media-chip">Saving {media.viewOnce ? "snap" : "media"}…</span>;
   if (media.status === "failed" || !media.url) return <span className="media-chip failed">Couldn't save {media.viewOnce ? "snap" : "media"}</span>;
-  const el = media.kind === "video"
+  const el = media.kind === "audio"
+    ? <audio ref={mediaRef} src={src} controls preload="metadata" className="media" onError={retry} />
+    : media.kind === "video"
     ? <video ref={mediaRef} src={src} controls preload="metadata" playsInline className="media" onError={retry} />
     : <img ref={mediaRef} src={src} className="media" alt="" loading="lazy" onClick={() => setOpen(true)} onError={retry} />;
   return (
     <div className={`media-wrap ${media.viewOnce ? "once" : ""}`}>
       {media.viewOnce && <span className="once-badge">👻 view-once</span>}
       {el}
-      {open && media.kind !== "video" && (
+      {open && media.kind === "image" && (
         <div className="lightbox" onClick={() => setOpen(false)}><img src={src} alt="" /></div>
       )}
     </div>

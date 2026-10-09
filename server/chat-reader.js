@@ -20,6 +20,9 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
   // Keep these out of messages and never attribute them to "Me".
   const systemRe = /^(?:you are using snapchat for web|you (?:took a screenshot(?: of (?:chat|friendship profile|the chat|the friendship profile))?|screen recorded chat|saved (?:a |an? )?(?:video|photo|snap|image)(?: from .{1,80})?)|this (?:video|snap|photo) is no longer available|(?:you|.{1,65}) saved (?:a |an? )?(?:video|photo|snap)(?: from .{1,80})?)[.!]?$/i;
   const relativeTimeRe = /^(?:\d+\s+(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)\s+ago|today|yesterday)$/i;
+  // Web-only placeholders are UI state, never user-authored text. Keep these
+  // as status records rather than contaminating the message archive.
+  const placeholderRe = /^(?:loading media(?:\.{3}|…)?|not supported on web|check from your phone to see what was sent!?|this (?:message|media|attachment|voice note) (?:is )?not supported(?: on web)?|unsupported (?:message|media|attachment))$/i;
   const output = [];
   const outputNodes = []; // DOM ordering, so saved media stays near its caption
   const seenMediaNodes = new Set();
@@ -63,7 +66,9 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
     seenTextNodes.add(node);
     const from = forcedSender || senderFrom(node);
     const base = { from, isMe: from === "Me", time: currentTime };
-    if (deletedRe.test(value) && value.length < 120) {
+    if (placeholderRe.test(value)) {
+      append({ kind: "notice", notice: "placeholder", from: "Snapchat", isMe: false, time: currentTime, text: value }, node);
+    } else if (deletedRe.test(value) && value.length < 120) {
       const who = value.split(/\s+deleted\b/i)[0].trim();
       append({ kind: "notice", notice: "deleted", ...base, from: who || from, text: value }, node);
     } else if ((statusRe.test(value) || screenshotRe.test(value) || savedRe.test(value) || systemRe.test(value)) && value.length < 200) {
@@ -98,6 +103,9 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
       const { width, height } = mediaDimension(node);
       if (width < 64 || height < 64) return;
       src = node.currentSrc || node.src || node.getAttribute?.("src");
+    } else if (node.tagName === "AUDIO") {
+      src = node.currentSrc || node.src || node.querySelector?.("source")?.src;
+      mediaType = "audio";
     } else if (node.tagName === "VIDEO") {
       const { width, height } = mediaDimension(node);
       if (width < 64 || height < 64) return;
@@ -220,10 +228,10 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
     const targets = blocks.length ? blocks : [row];
     for (const block of targets) {
       const from = senderFrom(block);
-      const nodes = block.querySelectorAll("span.ogn1z, img, video, button, [role='button']");
+      const nodes = block.querySelectorAll("span.ogn1z, img, video, audio, button, [role='button']");
       for (const node of nodes) {
         if (node.matches("span.ogn1z")) addText(node.textContent, node, from);
-        else if (node.tagName === "IMG" || node.tagName === "VIDEO") addMedia(node, from);
+        else if (node.tagName === "IMG" || node.tagName === "VIDEO" || node.tagName === "AUDIO") addMedia(node, from);
         else {
           const label = node.getAttribute?.("aria-label") || node.textContent || "";
           if (snapRe.test(label) && label.length < 160) {
@@ -237,7 +245,7 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
   // Always inspect media across the complete selected conversation. Snapchat
   // may render text using the legacy markup but images outside those <li>
   // blocks. The old early return silently dropped saved images/videos.
-  for (const node of root.querySelectorAll("img, video, [style*='background-image']")) addMedia(node);
+  for (const node of root.querySelectorAll("img, video, audio, [style*='background-image']")) addMedia(node);
   // Do NOT return just because the legacy pass found media or status entries:
   // quoted text and captions may use semantic leaves outside old span.ogn1z.
   // Each DOM text node is only processed once across both passes.
@@ -254,6 +262,9 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
   };
   const dateOnly = /^(today|yesterday|tomorrow|mon(day)?|tue(sday)?|wed(nesday)?|thu(rsday)?|fri(day)?|sat(urday)?|sun(day)?|\d{1,2}:\d{2}(?:\s*[ap]m)?|received|delivered|opened|screenshotted|saved in chat)$/i;
   const seenText = new Map();
+  // Parse semantic message containers first; never sweep entire wrapper text
+  // (which can contain labels, controls and duplicated message metadata).
+  const messageBoundary = "[data-message-id], [data-testid*='message' i], li.T1yt2";
   for (const el of root.querySelectorAll("*")) {
     if (isIgnored(el) || !isVisible(el) || withinQuote(el) || seenTextNodes.has(el)) continue;
     if (el.tagName === "IMG" || el.tagName === "VIDEO") {
@@ -268,9 +279,12 @@ export function extractVisibleMessages(chatId, chatName, deletedPattern, snapPat
     if (!value || value.length > 6000) continue;
     if (dateOnly.test(value) && !/^(?:received|opened|saved in chat)$/i.test(value)) continue;
     if (el.matches?.("[class*='time' i], [class*='status' i], [class*='timestamp' i]")) continue;
+    // Skip presentation-only placeholders embedded in media controls. They
+    // are classified in addText when encountered as standalone status text.
+    if (el.closest?.("audio, video")) continue;
     // Repeated identical text elements under the same bubble are duplicate
     // markup, not separate messages. Identical texts in separate bubbles stay.
-    const bubble = el.closest?.("[data-message-id], [data-testid*='message' i], li, [role='listitem']") || el;
+    const bubble = el.closest?.(messageBoundary) || el.closest?.("li, [role='listitem']") || el;
     if (seenText.has(bubble) && seenText.get(bubble)?.has(value)) continue;
     if (!seenText.has(bubble)) seenText.set(bubble, new Set());
     seenText.get(bubble).add(value);
