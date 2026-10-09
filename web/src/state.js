@@ -37,8 +37,10 @@ function reducer(state, a) {
   const acc = a.accountId;
   switch (a.type) {
     case "reset":
-      // reconnect: forget cached messages, the server re-sends current state
-      return { ...state, messages: {}, chats: {}, backfill: {} };
+      // reconnect: the server re-sends current state. Keep cached messages
+      // until the open chat's fresh snapshot replaces them, so the chat does
+      // not blank out, remount every video and lose its scroll position.
+      return { ...state, chats: {}, backfill: {} };
     case "config":
       return { ...state, config: { ...state.config, ...a.config } };
     case "accounts": {

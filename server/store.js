@@ -323,7 +323,10 @@ export default class MessageStore extends EventEmitter {
       if (r.key && this.sql.keyInUse.get(r.key).n === 0) this.emit("media:purge", [r.key]);
       else if (!r.key) this.emit("message:removed", { id: r.id, uid: r.uid, chatId: r.chatId });
     }
-    this.emit("chat:snapshot", { chatId, messages: this.getMessages(chatId) });
+    // Passive sync re-reads the open chat every few seconds. A snapshot with
+    // nothing new made every viewer re-render the whole conversation.
+    if (added.length || updated.length || removed.length)
+      this.emit("chat:snapshot", { chatId, messages: this.getMessages(chatId) });
     return { seen, added, preserve };
   }
 

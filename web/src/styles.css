@@ -237,6 +237,9 @@ input[type="checkbox"] { width: auto; accent-color: var(--me); }
 .day-sep span { font-size: 11px; font-weight: 600; color: var(--muted); background: var(--hover); padding: 3px 10px; border-radius: 99px; }
 .group { display: flex; flex-direction: column; gap: 3px; margin: 10px 0; max-width: min(620px, 80%); }
 .group.me { margin-left: auto; align-items: flex-end; }
+/* consecutive messages from one sender render as separate keyed rows */
+.group.more { margin-bottom: 0; }
+.group.cont { margin-top: 3px; }
 .group-from { font-size: 12px; font-weight: 700; color: var(--them); margin: 0 0 2px 4px; }
 .group.me .group-from { color: var(--me); }
 .bubble-row { display: flex; flex-direction: column; max-width: 100%; transition: opacity 0.4s, transform 0.4s; }
@@ -254,7 +257,7 @@ input[type="checkbox"] { width: auto; accent-color: var(--me); }
 .bubble-row:hover .bubble-meta, .bubble-row.soon .bubble-meta, .bubble-row.leaving .bubble-meta, .bubble-row.pending .bubble-meta {
   height: 20px; opacity: 1;
 }
-.bubble-row:last-child .bubble-meta { height: 20px; opacity: 1; }
+.group:not(.more) .bubble-row:last-child .bubble-meta { height: 20px; opacity: 1; }
 .hover-only { opacity: 0; }
 .bubble-row:hover .hover-only { opacity: 1; }
 .ttl {
