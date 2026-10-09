@@ -73,7 +73,7 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
   // Render one flat, uid-keyed list. Nesting bubbles inside per-group
   // wrappers keyed by their first message remounted every bubble (reloading
   // videos) whenever a message landed at the start or middle of a group.
-  const rows = group(messages).flatMap((g) => g.messages.map((m, i) => ({
+  const rows = group(messages, chat.name).flatMap((g) => g.messages.map((m, i) => ({
     g, m, first: i === 0, last: i === g.messages.length - 1,
   })));
   const offline = status !== "connected";

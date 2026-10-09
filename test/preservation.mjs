@@ -8,6 +8,21 @@ import { openDb, createCipher } from "../server/db.js";
 import MediaStorage from "../server/media.js";
 import AccountManager from "../server/accounts.js";
 import MockBot from "../server/mockBot.js";
+import { group } from "../web/src/message-groups.js";
+
+// A Snapchat nickname update must relabel archived incoming bubbles without
+// altering stored sender data, outgoing messages or system event provenance.
+const archived = [
+  { uid: "old", from: "TWIN BRO", isMe: false, kind: "text", text: "hello" },
+  { uid: "mine", from: "Me", isMe: true, kind: "text", text: "hi" },
+  { uid: "status", from: "Snapchat", isMe: false, kind: "status", text: "Saved a snap" },
+];
+const renamedGroups = group(archived, "ASHLEY");
+assert.equal(renamedGroups[0].from, "ASHLEY");
+assert.equal(renamedGroups[1].from, "Me");
+assert.equal(renamedGroups[2].from, "Snapchat");
+assert.equal(archived[0].from, "TWIN BRO", "the archived sender must stay unchanged");
+assert.equal(group(archived)[0].from, "TWIN BRO", "existing callers retain old behavior");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "snapbot-passive-archive-"));
 let db, accounts;
