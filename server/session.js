@@ -34,6 +34,7 @@ export default class Session extends EventEmitter {
     this.chats = [];
     this.activeChatId = null;
     this.queue = Promise.resolve();
+    this.lastVoiceDiagnostic = new Map();
     this.loopTimer = null;
     this.lastFullSync = 0;
     this.lastChatDiscovery = 0;
@@ -264,7 +265,10 @@ export default class Session extends EventEmitter {
     try {
       await this.syncChats();
     } catch (error) {
-      if (this.status === "connected") console.error("Sync failed", error.message);
+      if (this.status === "connected") {
+        diagnostic("sync_loop_failed", { accountId: this.accountId, stage: "tick", reason: classifyDiagnosticError(error) });
+        console.error("Sync failed", error.message);
+      }
     } finally {
       this.syncRunning = false;
       if (this.status === "connected") this.scheduleLoop(this.sidebarDirty ? 200 : this.config.syncIntervalMs);
@@ -367,6 +371,27 @@ export default class Session extends EventEmitter {
       }
       return { items: null, stage: "render", reason: "Snapchat opened this chat, but its messages did not render in time. Check Live Screen and retry." };
     });
+    // Read-only aggregate diagnostics. Throttle passive checks to avoid log spam
+    // while preserving an on-demand sample for user-approved interactive sync.
+    if (this.bot.inspectVoiceNoteRendering) {
+      const now = Date.now();
+      const last = this.lastVoiceDiagnostic.get(chatId) || 0;
+      if (interactive || now - last >= 60_000) {
+        this.lastVoiceDiagnostic.set(chatId, now);
+        try {
+          const sample = await this.run(() => this.bot.inspectVoiceNoteRendering(chatId));
+          if (sample && (interactive || sample.audioElements || sample.audioSources ||
+              sample.loadingPlaceholders || sample.voiceControls)) {
+            log("voice_note_probe", { stage: readResult?.items ? "rendered" : "unavailable",
+              visible: sample.visible, audioElements: sample.audioElements,
+              audioSources: sample.audioSources, loadingPlaceholders: sample.loadingPlaceholders,
+              voiceControls: sample.voiceControls });
+          }
+        } catch (error) {
+          log("voice_note_probe_failed", { stage: "inspect", reason: classifyDiagnosticError(error) });
+        }
+      }
+    }
     if (!readResult?.items) {
       if (interactive) log("chat_sync_failed", { stage: readResult?.stage || "render", reason: classifyDiagnosticError(readResult?.reason) });
       return { captured: false, reason: readResult?.reason || "Conversation not rendered" };

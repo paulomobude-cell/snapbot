@@ -12,6 +12,7 @@ const numericFields = new Set([
   "snap", "image", "video", "media", "stored", "reused", "unavailable",
   "retryDeferred", "viewOnceSkipped", "buffered", "newMessages", "elapsedMs",
   "pages", "reachedTop", "truncated", "reordered",
+  "visible", "audioElements", "audioSources", "loadingPlaceholders", "voiceControls",
 ]);
 const stringFields = new Set(["mode", "stage", "reason", "provider"]);
 

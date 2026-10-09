@@ -901,6 +901,39 @@ export default class SnapBot {
     });
   }
 
+  // Read-only voice-note diagnostics for the currently rendered conversation.
+  // Return aggregate counts only: never return labels, text, URLs or media bytes.
+  async inspectVoiceNoteRendering(chatId) {
+    return this.page.evaluate(id => {
+      const root = document.getElementById("cv-" + id);
+      if (!root) return { visible: 0, audioElements: 0, audioSources: 0,
+        loadingPlaceholders: 0, voiceControls: 0 };
+      const rect = root.getBoundingClientRect();
+      const style = getComputedStyle(root);
+      if (style.display === "none" || style.visibility === "hidden" ||
+          rect.width <= 0 || rect.height <= 0)
+        return { visible: 0, audioElements: 0, audioSources: 0,
+          loadingPlaceholders: 0, voiceControls: 0 };
+      const isRendered = el => {
+        const s = getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return s.display !== "none" && s.visibility !== "hidden" &&
+          r.width > 0 && r.height > 0;
+      };
+      const audio = [...root.querySelectorAll("audio")].filter(isRendered);
+      const sources = root.querySelectorAll("audio source").length;
+      const loading = [...root.querySelectorAll("span, div, p")]
+        .filter(el => isRendered(el) && ![...el.children].some(child => child.textContent?.trim()))
+        .filter(el => /^loading media(?:\\.\\.\\.|…)?$/i.test(el.textContent?.trim() || "")).length;
+      const controls = [...root.querySelectorAll("button, [role='button']")]
+        .filter(el => isRendered(el))
+        .filter(el => /(?:voice (?:note|message)|play audio|audio message)/i
+          .test(el.getAttribute("aria-label") || el.getAttribute("title") || "")).length;
+      return { visible: 1, audioElements: audio.length, audioSources: sources,
+        loadingPlaceholders: loading, voiceControls: controls };
+    }, chatId);
+  }
+
   async readMessages(chatId, chatName = "Them", options = {}) {
     const {
       deletedPattern = "\\bdeleted (a|an|the)? ?(chat|snap|message|photo|image|video|voice|audio|sticker|attachment)",
