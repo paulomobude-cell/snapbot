@@ -32,7 +32,7 @@ export function classifyDiagnosticError(error) {
 // raw stack, which could contain browser URLs or other sensitive information.
 export function classifyDiagnosticSite(error) {
   const stack = String(error?.stack || "");
-  const match = /(?:server\\/([a-z0-9-]+)\\.js|\\b(snapbot)\\.js):(\\d+):\\d+/i.exec(stack);
+  const match = /(?:server\/([a-z0-9-]+)\.js|\b(snapbot)\.js):(\d+):\d+/i.exec(stack);
   return match ? `${match[1] || match[2]}_line_${match[3]}`.slice(0, 49) : "unknown";
 }
 
