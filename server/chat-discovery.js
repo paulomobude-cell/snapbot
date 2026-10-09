@@ -41,7 +41,9 @@ export async function discoverChats({
       await pause(110);
     }
   } finally {
-    await scrollTo(initial.scrollTop).catch(() => {});
+    // A scrolling adapter may complete synchronously (returning null/void).
+    // Await the result inside try/catch instead of assuming it is a Promise.
+    try { await scrollTo(initial.scrollTop); } catch { /* best-effort restoration */ }
   }
   return [...seen.values()];
 }
