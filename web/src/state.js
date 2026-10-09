@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { io } from "socket.io-client";
+import { reconcileSnapshot, reconcileUpdate } from "./snapshot-stability.js";
 
 // Messages are keyed by stable `uid`; deletion state does not erase archived content.
 const initial = {
@@ -63,7 +64,10 @@ function reducer(state, a) {
       return { ...state, chats: setIn(state.chats, acc, a.chats) };
     case "snapshot": {
       const byChat = state.messages[acc] || {};
-      return { ...state, messages: setIn(state.messages, acc, { ...byChat, [a.chatId]: [...a.messages].sort(byOrd) }) };
+      const previous = byChat[a.chatId] || [];
+      const next = reconcileSnapshot(previous, a.messages);
+      if (next === previous) return state;
+      return { ...state, messages: setIn(state.messages, acc, { ...byChat, [a.chatId]: next }) };
     }
     case "new": {
       const byChat = state.messages[acc] || {};
@@ -85,8 +89,10 @@ function reducer(state, a) {
       const byChat = state.messages[acc] || {};
       const list = byChat[a.message.chatId];
       if (!list) return state;
-      const next = list.map((m) => (m.uid === a.message.uid ? a.message : m));
-      return { ...state, messages: setIn(state.messages, acc, { ...byChat, [a.message.chatId]: next }) };
+      const next = list.map(m => m.uid === a.message.uid ? reconcileUpdate(m, a.message) : m);
+      if (next.every((m, i) => m === list[i])) return state;
+      return { ...state, messages: setIn(state.messages, acc,
+        { ...byChat, [a.message.chatId]: next.sort(byOrd) }) };
     }
     case "removed": {
       const byChat = state.messages[acc] || {};

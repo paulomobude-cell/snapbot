@@ -36,6 +36,8 @@ jobs:
         working-directory: web
       - run: node scripts/conversation-smoke.mjs
         working-directory: web
+      - run: node scripts/chat-stability-smoke.mjs
+        working-directory: web
       - run: node scripts/chat-click-mode-smoke.mjs
         working-directory: web
       - run: node scripts/backend-url-smoke.mjs
