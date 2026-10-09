@@ -1,7 +1,7 @@
 import { EventEmitter } from "events";
 import fs from "fs";
 import { validateBackfillSelection } from "./backfill-selection.js";
-import { diagnostic, classifyDiagnosticError } from "./diagnostics.js";
+import { diagnostic, classifyDiagnosticError, classifyDiagnosticSite } from "./diagnostics.js";
 import { collectHistory } from "./history-scan.js";
 import path from "path";
 import crypto from "crypto";
@@ -266,7 +266,7 @@ export default class Session extends EventEmitter {
       await this.syncChats();
     } catch (error) {
       if (this.status === "connected") {
-        diagnostic("sync_loop_failed", { accountId: this.accountId, stage: "tick", reason: classifyDiagnosticError(error) });
+        diagnostic("sync_loop_failed", { accountId: this.accountId, stage: "tick", reason: classifyDiagnosticError(error), site: classifyDiagnosticSite(error) });
         console.error("Sync failed", error.message);
       }
     } finally {
