@@ -15,7 +15,7 @@ export function sniffType(buffer, fallback = "") {
   if (b.subarray(4, 8).toString() === "ftyp") {
     const brand = b.subarray(8, 12).toString();
     if (/^(heic|heix|mif1|msf1)/.test(brand)) return "image/heic";
-    return "video/mp4";
+    return /^audio\//.test(fallback) ? fallback : "video/mp4";
   }
   if (hex.startsWith("4f676753")) return "audio/ogg";
   if (hex.startsWith("494433")) return "audio/mpeg";
