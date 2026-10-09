@@ -14,7 +14,7 @@ const numericFields = new Set([
   "pages", "reachedTop", "truncated", "reordered",
   "visible", "audioElements", "audioSources", "loadingPlaceholders", "voiceControls",
 ]);
-const stringFields = new Set(["mode", "stage", "reason", "provider"]);
+const stringFields = new Set(["mode", "stage", "reason", "provider", "site"]);
 
 export function classifyDiagnosticError(error) {
   const value = String(error?.message || error || "");
@@ -26,6 +26,14 @@ export function classifyDiagnosticError(error) {
   if (/render|selector/i.test(value)) return "chat_not_rendered";
   if (/ECONN|ENOTFOUND|network|fetch failed/i.test(value)) return "network_failure";
   return "other";
+}
+
+// Extract only a repository source filename and line number; never emit the
+// raw stack, which could contain browser URLs or other sensitive information.
+export function classifyDiagnosticSite(error) {
+  const stack = String(error?.stack || "");
+  const match = /(?:server\\/([a-z0-9-]+)\\.js|\\b(snapbot)\\.js):(\\d+):\\d+/i.exec(stack);
+  return match ? `${match[1] || match[2]}_line_${match[3]}`.slice(0, 49) : "unknown";
 }
 
 export function diagnostic(event, { accountId, chatId, ...metrics } = {}) {
