@@ -88,6 +88,9 @@ function generateIcons() {
     fs.writeFileSync(path.join(publicDir, "icons", "icon-" + size + ".png"), png(size));
   fs.writeFileSync(path.join(publicDir, "icons", "maskable-512.png"), png(512, true));
   fs.writeFileSync(path.join(publicDir, "apple-touch-icon.png"), png(180));
+  // Browser tab icons use the exact same artwork as the PWA icons.
+  fs.writeFileSync(path.join(publicDir, "favicon-32.png"), png(32));
+  fs.writeFileSync(path.join(publicDir, "favicon-16.png"), png(16));
   console.log("Generated " + appId + " PNG icons for Android, desktop and Apple devices");
 }
 function finalize() {
@@ -95,7 +98,8 @@ function finalize() {
   const assets = [...new Set((html.match(/\/assets\/[a-zA-Z0-9_.-]+\.(?:js|css)/g) || []))];
   const precache = [
     "/offline.html", "/manifest.webmanifest", "/index.html",
-    "/apple-touch-icon.png", "/icons/icon-192.png", "/icons/icon-512.png",
+    "/apple-touch-icon.png", "/favicon-32.png", "/favicon-16.png",
+    "/icons/icon-192.png", "/icons/icon-512.png",
     "/icons/maskable-512.png", ...assets,
   ];
   for (const pathname of precache) {
