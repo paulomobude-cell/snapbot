@@ -9,7 +9,7 @@ function fingerprint(...parts) {
 
 const numericFields = new Set([
   "count", "total", "completed", "failed", "captured", "items", "text", "status",
-  "snap", "image", "video", "media", "stored", "reused", "unavailable",
+  "snap", "image", "video", "audio", "media", "stored", "reused", "unavailable",
   "retryDeferred", "viewOnceSkipped", "buffered", "newMessages", "elapsedMs",
   "pages", "reachedTop", "truncated", "reordered",
   "visible", "audioElements", "audioSources", "loadingPlaceholders", "voiceControls",
