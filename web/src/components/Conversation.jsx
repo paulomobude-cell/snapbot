@@ -10,6 +10,34 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
   const [atBottom, setAtBottom] = useState(true);
   const [missed, setMissed] = useState(0);
   const lastCount = useRef(0);
+  const atBottomRef = useRef(true);
+  atBottomRef.current = atBottom;
+
+  // Images/videos change height once they load. Stay pinned to the latest
+  // message only if the user was already there. Otherwise keep what they are
+  // reading in place; Safari has no native scroll anchoring, so media growing
+  // above the viewport would push the text down.
+  const mediaObserver = useRef(null);
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const nativeAnchoring = window.CSS?.supports?.("overflow-anchor", "auto");
+    const heights = new WeakMap();
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const height = entry.target.offsetHeight;
+        const previous = heights.get(entry.target);
+        heights.set(entry.target, height);
+        if (previous === undefined || previous === height) continue;
+        if (atBottomRef.current) el.scrollTop = el.scrollHeight;
+        else if (!nativeAnchoring && entry.target.getBoundingClientRect().bottom <= el.getBoundingClientRect().top)
+          el.scrollTop += height - previous;
+      }
+    });
+    mediaObserver.current = observer;
+    return () => { observer.disconnect(); mediaObserver.current = null; };
+  }, [Boolean(chat)]);
+  const observeMedia = useRef((node) => { if (node) mediaObserver.current?.observe(node); }).current;
 
   useLayoutEffect(() => {
     const el = listRef.current;
@@ -42,7 +70,12 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
   };
 
   const actualMessages = messages.filter(message => message.kind !== "status" && message.kind !== "notice");
-  const groups = group(messages);
+  // Render one flat, uid-keyed list. Nesting bubbles inside per-group
+  // wrappers keyed by their first message remounted every bubble (reloading
+  // videos) whenever a message landed at the start or middle of a group.
+  const rows = group(messages).flatMap((g) => g.messages.map((m, i) => ({
+    g, m, first: i === 0, last: i === g.messages.length - 1,
+  })));
   const offline = status !== "connected";
   const preserved = true;
 
@@ -92,17 +125,12 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
             text="Passive mode only saves conversations already visible in Snapchat Web. A fresh account has no history until you open a chat in Live Screen or explicitly archive selected chats."
           ><button className="btn small" onClick={onBackfill}>Choose chats to archive</button></Empty>
         )}
-        {groups.map((g) => (
-          <div key={g.key}>
-            {g.time && <div className="day-sep"><span>{g.time}</span></div>}
-            <div className={`group ${g.isStatus ? "statuses" : g.isMe ? "me" : "them"}`}>
-              {!g.isMe && g.messages.some(m => m.kind !== "status") && <div className="group-from">{g.from}</div>}
-              {g.messages.map((m) => (
-                m.kind === "status" || m.kind === "notice"
-                  ? <div className="chat-status-event" key={m.uid}>{m.text}</div>
-                  : <Bubble key={m.uid} m={m} onCopy={onCopy} />
-              ))}
-            </div>
+        {rows.map(({ g, m, first, last }) => (
+          <div key={m.uid} className={`group ${g.isStatus ? "statuses" : g.isMe ? "me" : "them"}${first ? "" : " cont"}${last ? "" : " more"}`}>
+            {first && !g.isMe && g.messages.some(x => x.kind !== "status") && <div className="group-from">{g.from}</div>}
+            {m.kind === "status" || m.kind === "notice"
+              ? <div className="chat-status-event">{m.text}</div>
+              : <Bubble m={m} onCopy={onCopy} mediaRef={observeMedia} />}
           </div>
         ))}
         {pending.length > 0 && (
@@ -143,7 +171,7 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
   );
 }
 
-function Bubble({ m, onCopy }) {
+function Bubble({ m, onCopy, mediaRef }) {
   const deleted = m.state === "deleted";
   const gone = m.state === "gone";
   const media = m.media?.[0];
@@ -157,7 +185,7 @@ function Bubble({ m, onCopy }) {
             {m.replyTo.mediaType && <span className="reply-preview-media">Quoted {m.replyTo.mediaType}</span>}
           </div>
         )}
-        {media && <MediaView media={media} />}
+        {media && <MediaView media={media} mediaRef={mediaRef} />}
         {m.kind === "snap" && !media && <span className="snap-tag">👻 Snap</span>}
         {m.text && <span className="bubble-text">{deleted ? m.display : m.text}</span>}
         {deleted && <span className="gone-tag del">Deleted</span>}
@@ -171,19 +199,27 @@ function Bubble({ m, onCopy }) {
   );
 }
 
-function MediaView({ media }) {
+function MediaView({ media, mediaRef }) {
   const [open, setOpen] = useState(false);
+  // Keep the first working link: chat snapshots can carry a freshly signed URL
+  // for the same file, and swapping src would reload the video and shift the
+  // chat. Only switch when the current link fails (e.g. it expired).
+  const [src, setSrc] = useState(media.url);
+  const latest = useRef(media.url);
+  latest.current = media.url;
+  useEffect(() => { if (!src && media.url) setSrc(media.url); }, [src, media.url]);
+  const retry = () => { if (latest.current && latest.current !== src) setSrc(latest.current); };
   if (media.status === "pending") return <span className="media-chip">Saving {media.viewOnce ? "snap" : "media"}…</span>;
   if (media.status === "failed" || !media.url) return <span className="media-chip failed">Couldn't save {media.viewOnce ? "snap" : "media"}</span>;
   const el = media.kind === "video"
-    ? <video src={media.url} controls className="media" />
-    : <img src={media.url} className="media" alt="" loading="lazy" onClick={() => setOpen(true)} />;
+    ? <video ref={mediaRef} src={src} controls preload="metadata" playsInline className="media" onError={retry} />
+    : <img ref={mediaRef} src={src} className="media" alt="" loading="lazy" onClick={() => setOpen(true)} onError={retry} />;
   return (
     <div className={`media-wrap ${media.viewOnce ? "once" : ""}`}>
       {media.viewOnce && <span className="once-badge">👻 view-once</span>}
       {el}
       {open && media.kind !== "video" && (
-        <div className="lightbox" onClick={() => setOpen(false)}><img src={media.url} alt="" /></div>
+        <div className="lightbox" onClick={() => setOpen(false)}><img src={src} alt="" /></div>
       )}
     </div>
   );
