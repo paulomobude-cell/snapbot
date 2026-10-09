@@ -41,6 +41,11 @@ try {
   for (let i=0; i<80 && entry.session.status !== "connected"; i++)
     await new Promise(r => setTimeout(r, 75));
   assert.equal(entry.session.status, "connected");
+  // Reproduce Railway session_line_535: media readers may return null
+  // synchronously, and must not crash passive chat sync.
+  assert.equal(await entry.session.readBuffer(() => null), null);
+  assert.equal(await entry.session.readBuffer(() => Promise.resolve(null)), null);
+  assert.equal(await entry.session.readBuffer(() => { throw Error("unavailable"); }), null);
   entry.session.stopLoop();
   await entry.session.syncChats();
   assert.equal(entry.session.bot.lastOpenedId, undefined, "passive startup must not open any conversation");
