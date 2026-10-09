@@ -10,6 +10,22 @@ export default function Conversation({ chat, status, messages, now, onBack, onSe
   const [atBottom, setAtBottom] = useState(true);
   const [missed, setMissed] = useState(0);
   const lastCount = useRef(0);
+  const atBottomRef = useRef(true);
+  atBottomRef.current = atBottom;
+
+  // Images/videos grow once they load. Keep the view pinned to the latest
+  // message only if the user was already there; never yank them while reading.
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const stick = () => { if (atBottomRef.current) el.scrollTop = el.scrollHeight; };
+    el.addEventListener("load", stick, true);
+    el.addEventListener("loadedmetadata", stick, true);
+    return () => {
+      el.removeEventListener("load", stick, true);
+      el.removeEventListener("loadedmetadata", stick, true);
+    };
+  }, [Boolean(chat)]);
 
   useLayoutEffect(() => {
     const el = listRef.current;
@@ -173,17 +189,25 @@ function Bubble({ m, onCopy }) {
 
 function MediaView({ media }) {
   const [open, setOpen] = useState(false);
+  // Keep the first working link: chat snapshots can carry a freshly signed URL
+  // for the same file, and swapping src would reload the video and shift the
+  // chat. Only switch when the current link fails (e.g. it expired).
+  const [src, setSrc] = useState(media.url);
+  const latest = useRef(media.url);
+  latest.current = media.url;
+  useEffect(() => { if (!src && media.url) setSrc(media.url); }, [src, media.url]);
+  const retry = () => { if (latest.current && latest.current !== src) setSrc(latest.current); };
   if (media.status === "pending") return <span className="media-chip">Saving {media.viewOnce ? "snap" : "media"}…</span>;
   if (media.status === "failed" || !media.url) return <span className="media-chip failed">Couldn't save {media.viewOnce ? "snap" : "media"}</span>;
   const el = media.kind === "video"
-    ? <video src={media.url} controls className="media" />
-    : <img src={media.url} className="media" alt="" loading="lazy" onClick={() => setOpen(true)} />;
+    ? <video src={src} controls preload="metadata" playsInline className="media" onError={retry} />
+    : <img src={src} className="media" alt="" loading="lazy" onClick={() => setOpen(true)} onError={retry} />;
   return (
     <div className={`media-wrap ${media.viewOnce ? "once" : ""}`}>
       {media.viewOnce && <span className="once-badge">👻 view-once</span>}
       {el}
       {open && media.kind !== "video" && (
-        <div className="lightbox" onClick={() => setOpen(false)}><img src={media.url} alt="" /></div>
+        <div className="lightbox" onClick={() => setOpen(false)}><img src={src} alt="" /></div>
       )}
     </div>
   );

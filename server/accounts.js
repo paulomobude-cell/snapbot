@@ -19,6 +19,7 @@ export default class AccountManager extends EventEmitter {
     this.config = config;
     this.BotClass = BotClass;
     this.entries = new Map(); // accountId -> { account, session, store }
+    this.urlCache = new Map(); // storageKey -> { url, expiresAt }
     const q = (sql) => db.prepare(sql);
     this.sql = {
       all: q(`SELECT * FROM accounts ORDER BY created_at`),
@@ -153,9 +154,25 @@ export default class AccountManager extends EventEmitter {
       ...m,
       media: await Promise.all(m.media.map(async ({ storageKey, ...media }) => ({
         ...media,
-        url: media.status === "stored" ? await this.media.url(storageKey, this.config.mediaUrlTtl) : null,
+        url: media.status === "stored" ? await this.mediaUrl(storageKey) : null,
       }))),
     })));
+  }
+
+  // Reuse a signed link until half its lifetime is spent. Re-signing on every
+  // snapshot changed the URL each sync, which made the browser reload videos
+  // and images and jump the chat scroll position.
+  async mediaUrl(storageKey) {
+    const ttl = this.config.mediaUrlTtl;
+    const now = Date.now();
+    const hit = this.urlCache.get(storageKey);
+    if (hit && hit.expiresAt - now > (ttl * 1000) / 2) return hit.url;
+    const url = await this.media.url(storageKey, ttl);
+    if (this.urlCache.size > 5000) {
+      for (const [key, entry] of this.urlCache) if (entry.expiresAt - now <= (ttl * 1000) / 2) this.urlCache.delete(key);
+    }
+    this.urlCache.set(storageKey, { url, expiresAt: now + ttl * 1000 });
+    return url;
   }
 
   async messages(accountId, chatId, options) {
