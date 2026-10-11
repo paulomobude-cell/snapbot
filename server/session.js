@@ -330,26 +330,50 @@ export default class Session extends EventEmitter {
     }
   }
 
-  async syncChat(chatId, { interactive = false, fromBackfill = false } = {}) {
+  async syncChat(chatId, { interactive = false, fromBackfill = false, serialized = false,
+    waitForRender = false, captureAvailableMedia = interactive } = {}) {
+    // Hold the same browser queue through reading AND durable storage. Without
+    // this, a second click could unmount a Snap while media is still being saved.
+    if (!serialized)
+      return this.run(() => this.syncChat(chatId,
+        { interactive, fromBackfill, serialized: true, waitForRender, captureAvailableMedia }));
     if (interactive && this.backfill?.status === "running" && !fromBackfill)
       throw new Error("Archive job running. Wait or cancel it first.");
+    // Live Screen interactions already hold the browser queue; enqueueing
+    // from inside those interactions would deadlock the archive.
+    const run = serialized ? task => Promise.resolve().then(task) : task => this.run(task);
     const mode = interactive ? "interactive" : "passive";
     const started = Date.now();
     const log = (event, fields = {}) => diagnostic(event, { accountId: this.accountId, chatId, mode, ...fields });
-    const chat = this.chats.find((c) => c.id === chatId);
+    const chat = this.chats.find((c) => c.id === chatId) ||
+      (await run(async () => (await this.bot.visibleChatId?.()) === chatId) ? { id: chatId, name: "Them" } : null);
     if (!chat) {
       if (interactive) log("chat_sync_failed", { stage: "discovery", reason: "chat_not_found" });
       return { captured: false, reason: "Chat not discovered" };
     }
-    const readResult = await this.run(async () => {
+    const early = { newMessages: 0, stored: 0, reused: 0, unavailable: 0, failed: 0, retryDeferred: 0, viewOnceSkipped: 0 };
+    const readResult = await run(async () => {
       if (interactive) {
+        // Flush the current open conversation BEFORE navigating away. This
+        // protects content received between the previous poll and this click.
+        const previous = this.bot.visibleChatId
+          ? await this.bot.visibleChatId().catch(() => null) : null;
+        if (previous && previous !== chatId) {
+          const prior = await this.syncChat(previous,
+            { serialized: true, captureAvailableMedia: true });
+          if (!prior.captured) {
+            diagnostic("chat_sync_failed", { accountId: this.accountId,
+              chatId: previous, mode: "before_navigation", stage: "capture", reason: prior.reason });
+            throw new Error("Previous chat could not be archived; refusing to navigate away from its content.");
+          }
+        }
         if (!(await this.bot.openChat(chatId)))
           return { items: null, stage: "open", reason: this.bot.lastChatOpenReason || "Could not open conversation in Snapchat Web" };
       } else if (!this.bot.visibleChatId || (await this.bot.visibleChatId()) !== chatId) {
         return { items: null, stage: "passive", reason: "Conversation is not already visible in Snapchat Web" };
       }
       // The browser may take several attempts to render an opened conversation.
-      for (let attempt = 0; attempt < (interactive ? 10 : 1); attempt++) {
+      for (let attempt = 0; attempt < (interactive || waitForRender ? 10 : 1); attempt++) {
         const items = await this.bot.readMessages(chatId, chat.name, this.config.patterns);
         if (items !== null) {
           if (interactive && this.bot.historyScroll) {
@@ -362,6 +386,16 @@ export default class Session extends EventEmitter {
                 firstItems: items,
                 read: () => this.bot.readMessages(chatId, chat.name, this.config.patterns),
                 capture: page => this.readMediaBuffers(page, { allowNetwork: true }),
+                onPage: async (page, batch) => {
+                  // Text is committed to SQLite and media written to durable
+                  // storage on EACH page, not after the entire history scan.
+                  const { seen, added } = this.store.sync(chatId, page, { preserve: true, reconcileMissing: false });
+                  early.newMessages += added.length;
+                  const saved = await this.captureMedia(chatId, seen, batch,
+                    { allowNetwork: true, serialized: true, forceRetry: true });
+                  for (const key of ["stored", "reused", "unavailable", "failed", "retryDeferred", "viewOnceSkipped"])
+                    early[key] += saved[key] || 0;
+                },
                 scrollOlder: () => this.bot.historyScroll(chatId, "older"),
                 restore: () => this.bot.historyScroll(chatId, "restore", initial.scrollTop),
                 pause: delay,
@@ -371,7 +405,7 @@ export default class Session extends EventEmitter {
           }
           return { items, attempts: attempt + 1 };
         }
-        if (interactive && attempt < 9) await delay(600);
+        if ((interactive || waitForRender) && attempt < 9) await delay(350);
       }
       return { items: null, stage: "render", reason: "Snapchat opened this chat, but its messages did not render in time. Check Live Screen and retry." };
     });
@@ -383,7 +417,7 @@ export default class Session extends EventEmitter {
       if (interactive || now - last >= 60_000) {
         this.lastVoiceDiagnostic.set(chatId, now);
         try {
-          const sample = await this.run(() => this.bot.inspectVoiceNoteRendering(chatId));
+          const sample = await run(() => this.bot.inspectVoiceNoteRendering(chatId));
           if (sample && (interactive || sample.audioElements || sample.audioSources ||
               sample.loadingPlaceholders || sample.voiceControls)) {
             log("voice_note_probe", { stage: readResult?.items ? "rendered" : "unavailable",
@@ -411,13 +445,19 @@ export default class Session extends EventEmitter {
       else if (item.kind === "media") tally.image++;
     }
     const buffers = readResult.buffers ||
-      await this.run(() => this.readMediaBuffers(items, { allowNetwork: interactive }));
+      await run(() => this.readMediaBuffers(items, { allowNetwork: captureAvailableMedia }));
     const { seen, added = [] } = this.store.sync(chatId, items, { preserve: true, reconcileMissing: false });
     const reordered = readResult.pages > 1 && this.store.reorderObserved
       ? this.store.reorderObserved(chatId, [...seen.keys()]) : false;
-    const media = await this.captureMedia(chatId, seen, buffers, { allowNetwork: interactive });
+    const last = await this.captureMedia(chatId, seen, buffers,
+      { allowNetwork: captureAvailableMedia, serialized, forceRetry: captureAvailableMedia });
+    const media = { ...last };
+    for (const key of ["stored", "reused", "unavailable", "failed", "retryDeferred", "viewOnceSkipped"])
+      media[key] += early[key];
+    const incompleteMedia = media.unavailable + media.failed + media.retryDeferred + media.viewOnceSkipped;
+    const partial = Boolean(readResult.truncated || incompleteMedia);
     if (interactive || added.length || (media?.stored || 0) || (media?.unavailable || 0) || (media?.failed || 0)) {
-      log("chat_sync", { ...tally, items: items.length, buffered: buffers.size, newMessages: added.length,
+      log("chat_sync", { ...tally, items: items.length, buffered: buffers.size, newMessages: added.length + early.newMessages,
         stored: media?.stored || 0, reused: media?.reused || 0,
         unavailable: media?.unavailable || 0, failed: media?.failed || 0,
         viewOnceSkipped: media?.viewOnceSkipped || 0,
@@ -427,7 +467,8 @@ export default class Session extends EventEmitter {
         reason: readResult.stoppedBy || "single_view" });
     }
     return {
-      captured: true, messageCount: this.store.getMessages(chatId).filter(m => m.kind !== "status").length,
+      captured: true, complete: !partial, partial,
+      media, messageCount: this.store.getMessages(chatId).filter(m => m.kind !== "status").length,
       history: { pages: readResult.pages || 1, reachedTop: Boolean(readResult.reachedTop),
         truncated: Boolean(readResult.truncated), reason: readResult.stoppedBy || "single_view" },
     };
@@ -481,7 +522,10 @@ export default class Session extends EventEmitter {
           const result = await this.syncChat(chatId, { interactive: true, fromBackfill: true });
           if (result.captured) {
             job.captured++;
-            if (result.history?.truncated) job.partial++;
+            if (result.partial) {
+              job.partial++;
+              job.errors.push({ chatId, error: "Partial archive: some media or scrollback was unavailable" });
+            }
           } else {
             job.failed++;
             job.errors.push({ chatId, error: result.reason || "Conversation not rendered" });
@@ -551,7 +595,8 @@ export default class Session extends EventEmitter {
   // Stores media for live messages in a consented chat that don't have it yet:
   // chat photos/videos from their blob, and tap-to-view snaps by opening them
   // (opening marks them viewed on Snapchat, same as if you opened the snap).
-  async captureMedia(chatId, seen, buffers, { allowNetwork = false } = {}) {
+  async captureMedia(chatId, seen, buffers,
+    { allowNetwork = false, serialized = false, forceRetry = false } = {}) {
     const stats = { stored: 0, reused: 0, unavailable: 0, failed: 0, retryDeferred: 0, viewOnceSkipped: 0 };
     for (const [id, item] of seen) {
       if (item.kind !== "media" && item.kind !== "snap") continue;
@@ -559,7 +604,7 @@ export default class Session extends EventEmitter {
       if (!message) continue;
       const existing = message.media[0];
       if (existing?.status === "stored") continue;
-      if (existing?.retryAt && existing.retryAt > Date.now()) { stats.retryDeferred++; continue; }
+      if (!forceRetry && existing?.retryAt && existing.retryAt > Date.now()) { stats.retryDeferred++; continue; }
 
       // An unopened view-once Snap is deliberately NEVER opened by sync.
       // It is not a media-capture failure and must not increment failure stats.
@@ -581,11 +626,9 @@ export default class Session extends EventEmitter {
       }
       let read = buffers.get(item.sha256);
       if (!read) {
-        read = await this.run(() =>
-          this.readBuffer(() =>
-            allowNetwork || /^(blob:|data:)/i.test(item.src || "") ? this.bot.readMedia(item.src) : null
-          )
-        );
+        const fetchMedia = () => this.readBuffer(() =>
+          allowNetwork || /^(blob:|data:)/i.test(item.src || "") ? this.bot.readMedia(item.src) : null);
+        read = await (serialized ? fetchMedia() : this.run(fetchMedia));
       }
       if (!read) {
         stats.unavailable++;
@@ -626,7 +669,16 @@ export default class Session extends EventEmitter {
     if (this.status !== "connected") throw new Error("Session not connected");
     if (this.backfill?.status === "running") throw new Error("Selected-chat archive running. Wait or cancel before sending.");
     await this.run(async () => {
+      const previous = this.bot.visibleChatId
+        ? await this.bot.visibleChatId().catch(() => null) : null;
+      if (previous && previous !== chatId) {
+        const saved = await this.archiveLiveChat(previous, "before_send_navigation");
+        if (!saved?.captured)
+          throw new Error("Current chat could not be archived; refusing to leave it to send a message.");
+      }
       if (!(await this.bot.openChat(chatId))) throw new Error("Chat not found");
+      const opened = await this.archiveLiveChat(chatId, "before_send");
+      if (!opened?.captured) throw new Error("New chat did not render; refusing to send before archiving.");
       await this.bot.typeMessage(text);
     });
     await delay(1000);
@@ -804,6 +856,45 @@ export default class Session extends EventEmitter {
     return page ? page.screenshot({ type: "jpeg", quality: 60 }) : null;
   }
 
+  // Live Screen click coordinates represent an explicit user navigation.
+  // Recognize the selected Snapchat row BEFORE clicking, save any currently
+  // visible chat, then archive the destination while holding the browser queue.
+  async archiveLiveChat(chatId, source, { report = true } = {}) {
+    if (!chatId || this.status !== "connected") return;
+    let result;
+    try { result = await this.syncChat(chatId, { serialized: true,
+      // This conversation was intentionally opened in the browser. Archive
+      // its already rendered HTTPS media as well as blob/data media; only
+      // truly background/passive scans restrict themselves to local blobs.
+      captureAvailableMedia: true,
+      waitForRender: ["live_click", "live_keyboard", "before_send", "after_live_scroll"].includes(source) }); }
+    catch (error) { result = { captured: false, reason: String(error.message || error) }; }
+    const detail = { chatId, source, captured: !!result.captured,
+      complete: !!result.complete, partial: !!result.partial, reason: result.reason || null,
+      media: result.media || null };
+    if (report) this.emit("chat:archive", detail);
+    diagnostic(result.captured && !result.partial ? "chat_live_archived" : "chat_live_archive_partial",
+      { accountId: this.accountId, chatId, mode: source,
+        stage: result.captured ? "partial_or_complete" : "failed",
+        reason: result.reason || (result.partial ? "incomplete_media_or_history" : "ok") });
+    return result;
+  }
+
+  async liveTargetAt(page, x, y) {
+    if (page !== this.bot?.page || typeof page.evaluate !== "function") return null;
+    return page.evaluate(({ x, y }) => {
+      const node = document.elementFromPoint(x, y);
+      const row = node?.closest?.("[role='listitem']");
+      const title = row?.querySelector?.("span[id^='title-']");
+      const conversation = node?.closest?.("[id^='cv-']");
+      const composer = node?.closest?.("input, textarea, [contenteditable], [role='textbox']");
+      return {
+        chatId: title?.id?.startsWith("title-") ? title.id.slice(6) : null,
+        insideChat: !composer && conversation?.id?.startsWith("cv-") ? conversation.id.slice(3) : null,
+      };
+    }, { x, y }).catch(() => null);
+  }
+
   async click(x, y) {
     if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
       throw new Error("Invalid live screen coordinates");
@@ -812,7 +903,31 @@ export default class Session extends EventEmitter {
       const page = await this.activeScreenPage();
       if (!page) throw new Error("Browser page not ready");
       const { width, height } = page.viewport?.() || { width: 1280, height: 720 };
-      await page.mouse.click(x * width, y * height);
+      const px = x * width, py = y * height;
+      const target = await this.liveTargetAt(page, px, py);
+      const current = page === this.bot?.page && this.bot?.visibleChatId
+        ? await this.bot.visibleChatId().catch(() => null) : null;
+      if (target?.chatId && current && target.chatId !== current) {
+        const previous = await this.archiveLiveChat(current, "before_navigation");
+        if (!previous?.captured)
+          throw new Error("Cannot verify the open chat was archived. Navigation stopped to protect its messages.");
+      }
+      await page.mouse.click(px, py);
+      if (page !== this.bot?.page || !this.bot?.visibleChatId) return;
+      if (target?.chatId) {
+        // Snapchat renders the new pane asynchronously after row selection.
+        for (let attempt = 0; attempt < 15; attempt++) {
+          if (await this.bot.visibleChatId().catch(() => null) === target.chatId) break;
+          await delay(200);
+        }
+      }
+      const visible = await this.bot.visibleChatId().catch(() => null);
+      const toArchive = target?.chatId || (visible && visible !== current ? visible : target?.insideChat);
+      if (toArchive && visible === toArchive) await this.archiveLiveChat(toArchive, "live_click");
+      else if (target?.chatId) this.emit("chat:archive", {
+        chatId: target.chatId, source: "live_click", captured: false,
+        reason: "Snapchat did not render the selected chat after clicking it",
+      });
     });
   }
 
@@ -831,7 +946,18 @@ export default class Session extends EventEmitter {
     return this.run(async () => {
       const page = await this.activeScreenPage();
       if (!page) throw new Error("Browser page not ready");
+      const previous = page === this.bot?.page && this.bot?.visibleChatId
+        ? await this.bot.visibleChatId().catch(() => null) : null;
       await page.keyboard.press(key);
+      if (key === "Enter" && page === this.bot?.page && this.bot?.visibleChatId) {
+        let visible = await this.bot.visibleChatId().catch(() => null);
+        for (let attempt = 0; attempt < 8 && !visible; attempt++) {
+          await delay(200);
+          visible = await this.bot.visibleChatId().catch(() => null);
+        }
+        if (visible && visible !== previous) await this.archiveLiveChat(visible, "live_keyboard");
+        else if (visible) await this.archiveLiveChat(visible, "live_keyboard");
+      }
     });
   }
 
@@ -840,10 +966,21 @@ export default class Session extends EventEmitter {
     return this.run(async () => {
       const page = await this.activeScreenPage();
       if (!page) throw new Error("Browser page not ready");
+      const chatId = page === this.bot?.page && this.bot?.visibleChatId
+        ? await this.bot.visibleChatId().catch(() => null) : null;
+      if (chatId) {
+        const saved = await this.archiveLiveChat(chatId, "before_live_scroll", { report: false });
+        if (!saved?.captured)
+          throw new Error("Unable to archive visible chat before scrolling. Scroll cancelled to protect content.");
+      }
       await page.mouse.wheel({
         deltaY: Math.max(-1400, Math.min(1400, deltaY)),
         deltaX: Math.max(-1400, Math.min(1400, deltaX)),
       });
+      if (chatId) {
+        await delay(250);
+        await this.archiveLiveChat(chatId, "after_live_scroll", { report: false });
+      }
     });
   }
 

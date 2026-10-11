@@ -49,4 +49,26 @@ const mediaResult=await collectHistory({
 assert.equal(mediaResult.buffers.size,1);
 assert.equal(mediaResult.buffers.get("xyz").buffer.length,3);
 assert.equal(captureCount,1,"capture media before the page can unmount it");
+
+const ordered = [];
+let walk = 0;
+const incremental = await collectHistory({
+  firstItems: [msg("fresh")],
+  capture: async page => { ordered.push("capture:" + page[0].text); return new Map(); },
+  onPage: async page => { ordered.push("persist:" + page[0].text); },
+  scrollOlder: async () => { ordered.push("scroll"); walk++; return { moved: false, atTop: true }; },
+  restore: async () => { ordered.push("restore"); },
+});
+assert.equal(incremental.reachedTop, true);
+assert.deepEqual(ordered, ["capture:fresh", "persist:fresh", "scroll", "restore"],
+  "each page is committed before scrolling can unmount it");
+let retainedOnFailure = false;
+await assert.rejects(collectHistory({
+  firstItems: [msg("important")],
+  capture: async () => new Map(),
+  onPage: async () => { retainedOnFailure = true; throw Error("storage unavailable"); },
+  scrollOlder: async () => { throw Error("Must never scroll before saving"); },
+  restore: async () => {},
+}), /storage unavailable/);
+assert.equal(retainedOnFailure, true);
 console.log("History merge passed: older-first chronology, retained duplicates, bounded fallback and restoration.");

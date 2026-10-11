@@ -102,6 +102,11 @@ export default class AccountManager extends EventEmitter {
       this.log(id, "observed", chatId, `${chatName(chatId)}: ${status?.type || "activity"} ${status?.time || ""}`.trim());
     });
     session.on("screen:frame", (frame) => this.emit("screen:frame", { accountId: id, ...frame }));
+    session.on("chat:archive", (outcome) => {
+      this.log(id, outcome.captured && !outcome.partial ? "archived" : "archive_partial", outcome.chatId,
+        outcome.captured && !outcome.partial ? "Browser chat archived" : "Browser chat was not fully archived");
+      this.emit("chat:archive", { accountId: id, ...outcome });
+    });
     store.on("chat:snapshot", ({ chatId, messages }) =>
       send("chat:snapshot", async () => ({ chatId, messages: await this.withUrls(messages) }))
     );

@@ -367,7 +367,7 @@ accounts.on("screen:frame", (data) => {
   const owner = accounts.entries.get(data.accountId)?.account.owner_user_id;
   if (owner) io.to(`screen:${data.accountId}`).volatile.emit("screen:frame", data);
 });
-for (const event of ["chats", "chat:snapshot", "activity", "status", "backfill:progress", "message:new",
+for (const event of ["chats", "chat:snapshot", "activity", "status", "backfill:progress", "chat:archive", "message:new",
   "message:updated", "message:removed"]) {
   accounts.on(event, (data) => {
     const owner = accounts.entries.get(data.accountId)?.account.owner_user_id;
