@@ -1,0 +1,82 @@
+import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { createRealtimeTracker, isSnapchatSocket, shouldRecoverRealtime } from "../server/realtime-health.js";
+import Session from "../server/session.js";
+import SnapBot from "../snapbot.js";
+
+let now = 10000;
+const t = createRealtimeTracker(() => now);
+assert.equal(isSnapchatSocket("wss://web.snapchat.com/messaging"), true);
+assert.equal(isSnapchatSocket("wss://messaging.snap.com/stream"), true);
+assert.equal(isSnapchatSocket("wss://fake-snapchat.com/stream"), false);
+assert.equal(isSnapchatSocket("https://web.snapchat.com/api"), false);
+t.created({ requestId: "ignored", url: "wss://example.org/chat" });
+t.handshake({ requestId: "ignored", response: { status: 101 } });
+assert.equal(t.snapshot().state, "unknown", "unrelated websockets must not affect Snapchat health");
+t.created({ requestId: "a", url: "wss://web.snapchat.com/a" });
+t.handshake({ requestId: "a", response: { status: 403 } });
+assert.equal(t.snapshot().state, "unknown", "failed handshake cannot prove a previously healthy connection");
+t.handshake({ requestId: "a", response: { status: 101 } });
+t.created({ requestId: "b", url: "wss://web.snapchat.com/b" });
+t.handshake({ requestId: "b", response: { status: 101 } });
+assert.equal(t.snapshot().activeSockets, 2);
+t.received({ requestId: "a", response: { payloadData: "private text" } });
+assert.equal(t.snapshot().incomingFrames, 1);
+assert.ok(!JSON.stringify(t.snapshot()).includes("private text"), "never log websocket payloads");
+t.closed({ requestId: "a" });
+assert.equal(t.snapshot().state, "healthy", "one of several connections closing is not a full outage");
+t.error({ requestId: "b", errorMessage: "secret error" });
+t.closed({ requestId: "b" });
+now += 121000;
+assert.equal(t.snapshot().state, "disconnected");
+assert.equal(t.snapshot().disconnectedForMs, 121000);
+assert.ok(shouldRecoverRealtime(t.snapshot()));
+assert.ok(!shouldRecoverRealtime(t.snapshot(), { viewers: 1 }));
+assert.ok(!shouldRecoverRealtime(t.snapshot(), { backfillRunning: true }));
+assert.ok(!shouldRecoverRealtime(t.snapshot(), { sinceLastAttemptMs: 1000 }));
+t.created({ requestId: "c", url: "wss://web.snapchat.com/reconnect" });
+t.handshake({ requestId: "c", response: { status: 101 } });
+assert.equal(t.snapshot().state, "healthy", "successful reconnect cancels pending recovery");
+t.reset();
+assert.equal(t.snapshot().state, "unknown", "page navigation invalidates old connections");
+
+// CDP observer is installed before site load. No URLs or frame bytes are stored.
+const cdp = new EventEmitter();
+cdp.send = async name => { assert.equal(name, "Network.enable"); };
+cdp.detach = async () => {};
+const page = new EventEmitter();
+page.createCDPSession = async () => cdp;
+const frame = {};
+page.mainFrame = () => frame;
+const bot = new SnapBot();
+bot.page = page;
+assert.equal(await bot.installRealtimeMonitor(), true);
+cdp.emit("Network.webSocketCreated", { requestId: "1", url: "wss://web.snapchat.com/message" });
+cdp.emit("Network.webSocketHandshakeResponseReceived", { requestId: "1", response: { status: 101 } });
+assert.equal(bot.getRealtimeHealth().state, "healthy");
+page.emit("framenavigated", frame);
+assert.equal(bot.getRealtimeHealth().state, "unknown");
+assert.equal(await bot.installRealtimeMonitor(), false, "monitor must not duplicate listeners");
+
+// Only a confirmed sustained disconnect is eligible for automated refresh.
+const s = new Session({ store: {}, media: {}, config: {}, profileDir: "/tmp/realtime-test" });
+s.status = "connected";
+s.accountId = "test";
+let recovered = [];
+s.bot = { getRealtimeHealth: () => ({ state: "disconnected", activeSockets: 0,
+  failures: 2, incomingFrames: 3, disconnectedForMs: 130000 }) };
+s.refreshScreen = async opts => { recovered.push(opts); return { refreshed: true }; };
+await s.inspectRealtimeHealth();
+assert.deepEqual(recovered, [{ hard: true, primary: true, requireComplete: true }]);
+await s.inspectRealtimeHealth();
+assert.equal(recovered.length, 1, "recovery must have a cooldown");
+s.lastRealtimeRecoveryAttempt = 0;
+s.viewers = 1;
+await s.inspectRealtimeHealth();
+assert.equal(recovered.length, 1, "no unattended reload while someone is watching Live Screen");
+s.viewers = 0;
+s.bot.getRealtimeHealth = () => ({ state: "unknown", activeSockets: 0, failures: 0,
+  incomingFrames: 0, disconnectedForMs: 0 });
+await s.inspectRealtimeHealth();
+assert.equal(recovered.length, 1, "unknown HTTP/2 transport must never trigger an automatic refresh");
+console.log("Real-time browser checks passed: transport observation, recovery cooldown, viewer safety, and no payload logging.");
