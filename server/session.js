@@ -330,19 +330,32 @@ export default class Session extends EventEmitter {
     }
   }
 
-  async syncChat(chatId, { interactive = false, fromBackfill = false } = {}) {
+  async syncChat(chatId, { interactive = false, fromBackfill = false, serialized = false } = {}) {
     if (interactive && this.backfill?.status === "running" && !fromBackfill)
       throw new Error("Archive job running. Wait or cancel it first.");
+    // Live Screen interactions already hold the browser queue; enqueueing
+    // from inside those interactions would deadlock the archive.
+    const run = serialized ? task => Promise.resolve().then(task) : task => this.run(task);
     const mode = interactive ? "interactive" : "passive";
     const started = Date.now();
     const log = (event, fields = {}) => diagnostic(event, { accountId: this.accountId, chatId, mode, ...fields });
-    const chat = this.chats.find((c) => c.id === chatId);
+    const chat = this.chats.find((c) => c.id === chatId) ||
+      (await run(async () => (await this.bot.visibleChatId?.()) === chatId) ? { id: chatId, name: "Them" } : null);
     if (!chat) {
       if (interactive) log("chat_sync_failed", { stage: "discovery", reason: "chat_not_found" });
       return { captured: false, reason: "Chat not discovered" };
     }
-    const readResult = await this.run(async () => {
+    const early = { newMessages: 0, stored: 0, reused: 0, unavailable: 0, failed: 0, retryDeferred: 0, viewOnceSkipped: 0 };
+    const readResult = await run(async () => {
       if (interactive) {
+        // Flush the current open conversation BEFORE navigating away. This
+        // protects content received between the previous poll and this click.
+        const previous = await this.bot.visibleChatId?.().catch(() => null);
+        if (previous && previous !== chatId) {
+          const prior = await this.syncChat(previous, { serialized: true });
+          if (!prior.captured) diagnostic("chat_sync_failed", { accountId: this.accountId,
+            chatId: previous, mode: "before_navigation", stage: "capture", reason: prior.reason });
+        }
         if (!(await this.bot.openChat(chatId)))
           return { items: null, stage: "open", reason: this.bot.lastChatOpenReason || "Could not open conversation in Snapchat Web" };
       } else if (!this.bot.visibleChatId || (await this.bot.visibleChatId()) !== chatId) {
@@ -362,6 +375,16 @@ export default class Session extends EventEmitter {
                 firstItems: items,
                 read: () => this.bot.readMessages(chatId, chat.name, this.config.patterns),
                 capture: page => this.readMediaBuffers(page, { allowNetwork: true }),
+                onPage: async (page, batch) => {
+                  // Text is committed to SQLite and media written to durable
+                  // storage on EACH page, not after the entire history scan.
+                  const { seen, added } = this.store.sync(chatId, page, { preserve: true, reconcileMissing: false });
+                  early.newMessages += added.length;
+                  const saved = await this.captureMedia(chatId, seen, batch,
+                    { allowNetwork: true, serialized: true, forceRetry: true });
+                  for (const key of ["stored", "reused", "unavailable", "failed", "retryDeferred", "viewOnceSkipped"])
+                    early[key] += saved[key] || 0;
+                },
                 scrollOlder: () => this.bot.historyScroll(chatId, "older"),
                 restore: () => this.bot.historyScroll(chatId, "restore", initial.scrollTop),
                 pause: delay,
@@ -383,7 +406,7 @@ export default class Session extends EventEmitter {
       if (interactive || now - last >= 60_000) {
         this.lastVoiceDiagnostic.set(chatId, now);
         try {
-          const sample = await this.run(() => this.bot.inspectVoiceNoteRendering(chatId));
+          const sample = await run(() => this.bot.inspectVoiceNoteRendering(chatId));
           if (sample && (interactive || sample.audioElements || sample.audioSources ||
               sample.loadingPlaceholders || sample.voiceControls)) {
             log("voice_note_probe", { stage: readResult?.items ? "rendered" : "unavailable",
@@ -411,13 +434,19 @@ export default class Session extends EventEmitter {
       else if (item.kind === "media") tally.image++;
     }
     const buffers = readResult.buffers ||
-      await this.run(() => this.readMediaBuffers(items, { allowNetwork: interactive }));
+      await run(() => this.readMediaBuffers(items, { allowNetwork: interactive }));
     const { seen, added = [] } = this.store.sync(chatId, items, { preserve: true, reconcileMissing: false });
     const reordered = readResult.pages > 1 && this.store.reorderObserved
       ? this.store.reorderObserved(chatId, [...seen.keys()]) : false;
-    const media = await this.captureMedia(chatId, seen, buffers, { allowNetwork: interactive });
+    const last = await this.captureMedia(chatId, seen, buffers,
+      { allowNetwork: interactive, serialized, forceRetry: interactive });
+    const media = { ...last };
+    for (const key of ["stored", "reused", "unavailable", "failed", "retryDeferred", "viewOnceSkipped"])
+      media[key] += early[key];
+    const incompleteMedia = media.unavailable + media.failed + media.retryDeferred + media.viewOnceSkipped;
+    const partial = Boolean(readResult.truncated || incompleteMedia);
     if (interactive || added.length || (media?.stored || 0) || (media?.unavailable || 0) || (media?.failed || 0)) {
-      log("chat_sync", { ...tally, items: items.length, buffered: buffers.size, newMessages: added.length,
+      log("chat_sync", { ...tally, items: items.length, buffered: buffers.size, newMessages: added.length + early.newMessages,
         stored: media?.stored || 0, reused: media?.reused || 0,
         unavailable: media?.unavailable || 0, failed: media?.failed || 0,
         viewOnceSkipped: media?.viewOnceSkipped || 0,
@@ -427,7 +456,8 @@ export default class Session extends EventEmitter {
         reason: readResult.stoppedBy || "single_view" });
     }
     return {
-      captured: true, messageCount: this.store.getMessages(chatId).filter(m => m.kind !== "status").length,
+      captured: true, complete: !partial, partial,
+      media, messageCount: this.store.getMessages(chatId).filter(m => m.kind !== "status").length,
       history: { pages: readResult.pages || 1, reachedTop: Boolean(readResult.reachedTop),
         truncated: Boolean(readResult.truncated), reason: readResult.stoppedBy || "single_view" },
     };
@@ -481,7 +511,10 @@ export default class Session extends EventEmitter {
           const result = await this.syncChat(chatId, { interactive: true, fromBackfill: true });
           if (result.captured) {
             job.captured++;
-            if (result.history?.truncated) job.partial++;
+            if (result.partial) {
+              job.partial++;
+              job.errors.push({ chatId, error: "Partial archive: some media or scrollback was unavailable" });
+            }
           } else {
             job.failed++;
             job.errors.push({ chatId, error: result.reason || "Conversation not rendered" });
@@ -551,7 +584,8 @@ export default class Session extends EventEmitter {
   // Stores media for live messages in a consented chat that don't have it yet:
   // chat photos/videos from their blob, and tap-to-view snaps by opening them
   // (opening marks them viewed on Snapchat, same as if you opened the snap).
-  async captureMedia(chatId, seen, buffers, { allowNetwork = false } = {}) {
+  async captureMedia(chatId, seen, buffers,
+    { allowNetwork = false, serialized = false, forceRetry = false } = {}) {
     const stats = { stored: 0, reused: 0, unavailable: 0, failed: 0, retryDeferred: 0, viewOnceSkipped: 0 };
     for (const [id, item] of seen) {
       if (item.kind !== "media" && item.kind !== "snap") continue;
@@ -559,7 +593,7 @@ export default class Session extends EventEmitter {
       if (!message) continue;
       const existing = message.media[0];
       if (existing?.status === "stored") continue;
-      if (existing?.retryAt && existing.retryAt > Date.now()) { stats.retryDeferred++; continue; }
+      if (!forceRetry && existing?.retryAt && existing.retryAt > Date.now()) { stats.retryDeferred++; continue; }
 
       // An unopened view-once Snap is deliberately NEVER opened by sync.
       // It is not a media-capture failure and must not increment failure stats.
@@ -581,11 +615,9 @@ export default class Session extends EventEmitter {
       }
       let read = buffers.get(item.sha256);
       if (!read) {
-        read = await this.run(() =>
-          this.readBuffer(() =>
-            allowNetwork || /^(blob:|data:)/i.test(item.src || "") ? this.bot.readMedia(item.src) : null
-          )
-        );
+        const fetchMedia = () => this.readBuffer(() =>
+          allowNetwork || /^(blob:|data:)/i.test(item.src || "") ? this.bot.readMedia(item.src) : null);
+        read = await (serialized ? fetchMedia() : this.run(fetchMedia));
       }
       if (!read) {
         stats.unavailable++;
