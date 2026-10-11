@@ -330,11 +330,13 @@ export default class Session extends EventEmitter {
     }
   }
 
-  async syncChat(chatId, { interactive = false, fromBackfill = false, serialized = false, waitForRender = false } = {}) {
+  async syncChat(chatId, { interactive = false, fromBackfill = false, serialized = false,
+    waitForRender = false, captureAvailableMedia = interactive } = {}) {
     // Hold the same browser queue through reading AND durable storage. Without
     // this, a second click could unmount a Snap while media is still being saved.
     if (!serialized)
-      return this.run(() => this.syncChat(chatId, { interactive, fromBackfill, serialized: true, waitForRender }));
+      return this.run(() => this.syncChat(chatId,
+        { interactive, fromBackfill, serialized: true, waitForRender, captureAvailableMedia }));
     if (interactive && this.backfill?.status === "running" && !fromBackfill)
       throw new Error("Archive job running. Wait or cancel it first.");
     // Live Screen interactions already hold the browser queue; enqueueing
@@ -442,12 +444,12 @@ export default class Session extends EventEmitter {
       else if (item.kind === "media") tally.image++;
     }
     const buffers = readResult.buffers ||
-      await run(() => this.readMediaBuffers(items, { allowNetwork: interactive }));
+      await run(() => this.readMediaBuffers(items, { allowNetwork: captureAvailableMedia }));
     const { seen, added = [] } = this.store.sync(chatId, items, { preserve: true, reconcileMissing: false });
     const reordered = readResult.pages > 1 && this.store.reorderObserved
       ? this.store.reorderObserved(chatId, [...seen.keys()]) : false;
     const last = await this.captureMedia(chatId, seen, buffers,
-      { allowNetwork: interactive, serialized, forceRetry: interactive });
+      { allowNetwork: captureAvailableMedia, serialized, forceRetry: captureAvailableMedia });
     const media = { ...last };
     for (const key of ["stored", "reused", "unavailable", "failed", "retryDeferred", "viewOnceSkipped"])
       media[key] += early[key];
@@ -860,6 +862,10 @@ export default class Session extends EventEmitter {
     if (!chatId || this.status !== "connected") return;
     let result;
     try { result = await this.syncChat(chatId, { serialized: true,
+      // This conversation was intentionally opened in the browser. Archive
+      // its already rendered HTTPS media as well as blob/data media; only
+      // truly background/passive scans restrict themselves to local blobs.
+      captureAvailableMedia: true,
       waitForRender: ["live_click", "live_keyboard", "before_send", "after_live_scroll"].includes(source) }); }
     catch (error) { result = { captured: false, reason: String(error.message || error) }; }
     const detail = { chatId, source, captured: !!result.captured,
