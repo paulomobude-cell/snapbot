@@ -659,7 +659,16 @@ export default class Session extends EventEmitter {
     if (this.status !== "connected") throw new Error("Session not connected");
     if (this.backfill?.status === "running") throw new Error("Selected-chat archive running. Wait or cancel before sending.");
     await this.run(async () => {
+      const previous = this.bot.visibleChatId
+        ? await this.bot.visibleChatId().catch(() => null) : null;
+      if (previous && previous !== chatId) {
+        const saved = await this.archiveLiveChat(previous, "before_send_navigation");
+        if (!saved?.captured)
+          throw new Error("Current chat could not be archived; refusing to leave it to send a message.");
+      }
       if (!(await this.bot.openChat(chatId))) throw new Error("Chat not found");
+      const opened = await this.archiveLiveChat(chatId, "before_send");
+      if (!opened?.captured) throw new Error("New chat did not render; refusing to send before archiving.");
       await this.bot.typeMessage(text);
     });
     await delay(1000);
@@ -840,7 +849,7 @@ export default class Session extends EventEmitter {
   // Live Screen click coordinates represent an explicit user navigation.
   // Recognize the selected Snapchat row BEFORE clicking, save any currently
   // visible chat, then archive the destination while holding the browser queue.
-  async archiveLiveChat(chatId, source) {
+  async archiveLiveChat(chatId, source, { report = true } = {}) {
     if (!chatId || this.status !== "connected") return;
     let result;
     try { result = await this.syncChat(chatId, { serialized: true }); }
@@ -848,7 +857,7 @@ export default class Session extends EventEmitter {
     const detail = { chatId, source, captured: !!result.captured,
       complete: !!result.complete, partial: !!result.partial, reason: result.reason || null,
       media: result.media || null };
-    this.emit("chat:archive", detail);
+    if (report) this.emit("chat:archive", detail);
     diagnostic(result.captured && !result.partial ? "chat_live_archived" : "chat_live_archive_partial",
       { accountId: this.accountId, chatId, mode: source,
         stage: result.captured ? "partial_or_complete" : "failed",
@@ -942,10 +951,21 @@ export default class Session extends EventEmitter {
     return this.run(async () => {
       const page = await this.activeScreenPage();
       if (!page) throw new Error("Browser page not ready");
+      const chatId = page === this.bot?.page && this.bot?.visibleChatId
+        ? await this.bot.visibleChatId().catch(() => null) : null;
+      if (chatId) {
+        const saved = await this.archiveLiveChat(chatId, "before_live_scroll", { report: false });
+        if (!saved?.captured)
+          throw new Error("Unable to archive visible chat before scrolling. Scroll cancelled to protect content.");
+      }
       await page.mouse.wheel({
         deltaY: Math.max(-1400, Math.min(1400, deltaY)),
         deltaX: Math.max(-1400, Math.min(1400, deltaX)),
       });
+      if (chatId) {
+        await delay(250);
+        await this.archiveLiveChat(chatId, "after_live_scroll", { report: false });
+      }
     });
   }
 
