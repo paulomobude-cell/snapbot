@@ -7,6 +7,7 @@ import Session from "../server/session.js";
 const events = [];
 let current = "first";
 let readable = true;
+let delayedDestinationReads = 0;
 let selected = "second";
 const page = {
   viewport: () => ({ width: 1200, height: 800 }),
@@ -36,9 +37,15 @@ session.bot = {
   page,
   browser: { pages: async () => [page] },
   visibleChatId: async () => current,
-  readMessages: async id => readable && id === current
-    ? [{ kind: "text", text: "message " + id, from: "Friend", isMe: false, time: "" }]
-    : null,
+  readMessages: async id => {
+    if (id === "second" && delayedDestinationReads > 0) {
+      delayedDestinationReads--;
+      return null;
+    }
+    return readable && id === current
+      ? [{ kind: "text", text: "message " + id, from: "Friend", isMe: false, time: "" }]
+      : null;
+  },
   openChat: async id => { events.push("open:" + id); current = id; return true; },
   typeMessage: async () => events.push("type"),
 };
@@ -51,6 +58,14 @@ assert.deepEqual(events.slice(0, 3), ["persist:first", "click", "persist:second"
   "visible content is committed before navigation and newly opened chat is committed immediately");
 assert.equal(outcomes.at(-1).captured, true);
 assert.equal(outcomes.at(-1).complete, true);
+
+events.length = 0;
+current = "first";
+delayedDestinationReads = 2;
+await session.click(.5, .5);
+assert.equal(outcomes.at(-1).captured, true, "late-mounted messages are retried after browser click");
+assert.equal(delayedDestinationReads, 0);
+assert.deepEqual(events.slice(0, 3), ["persist:first", "click", "persist:second"]);
 
 events.length = 0;
 current = "first";
