@@ -330,11 +330,11 @@ export default class Session extends EventEmitter {
     }
   }
 
-  async syncChat(chatId, { interactive = false, fromBackfill = false, serialized = false } = {}) {
+  async syncChat(chatId, { interactive = false, fromBackfill = false, serialized = false, waitForRender = false } = {}) {
     // Hold the same browser queue through reading AND durable storage. Without
     // this, a second click could unmount a Snap while media is still being saved.
     if (!serialized)
-      return this.run(() => this.syncChat(chatId, { interactive, fromBackfill, serialized: true }));
+      return this.run(() => this.syncChat(chatId, { interactive, fromBackfill, serialized: true, waitForRender }));
     if (interactive && this.backfill?.status === "running" && !fromBackfill)
       throw new Error("Archive job running. Wait or cancel it first.");
     // Live Screen interactions already hold the browser queue; enqueueing
@@ -370,7 +370,7 @@ export default class Session extends EventEmitter {
         return { items: null, stage: "passive", reason: "Conversation is not already visible in Snapchat Web" };
       }
       // The browser may take several attempts to render an opened conversation.
-      for (let attempt = 0; attempt < (interactive ? 10 : 1); attempt++) {
+      for (let attempt = 0; attempt < (interactive || waitForRender ? 10 : 1); attempt++) {
         const items = await this.bot.readMessages(chatId, chat.name, this.config.patterns);
         if (items !== null) {
           if (interactive && this.bot.historyScroll) {
@@ -402,7 +402,7 @@ export default class Session extends EventEmitter {
           }
           return { items, attempts: attempt + 1 };
         }
-        if (interactive && attempt < 9) await delay(600);
+        if ((interactive || waitForRender) && attempt < 9) await delay(350);
       }
       return { items: null, stage: "render", reason: "Snapchat opened this chat, but its messages did not render in time. Check Live Screen and retry." };
     });
@@ -859,7 +859,8 @@ export default class Session extends EventEmitter {
   async archiveLiveChat(chatId, source, { report = true } = {}) {
     if (!chatId || this.status !== "connected") return;
     let result;
-    try { result = await this.syncChat(chatId, { serialized: true }); }
+    try { result = await this.syncChat(chatId, { serialized: true,
+      waitForRender: ["live_click", "live_keyboard", "before_send", "after_live_scroll"].includes(source) }); }
     catch (error) { result = { captured: false, reason: String(error.message || error) }; }
     const detail = { chatId, source, captured: !!result.captured,
       complete: !!result.complete, partial: !!result.partial, reason: result.reason || null,
