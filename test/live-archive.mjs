@@ -68,9 +68,11 @@ assert.deepEqual(events.slice(0, 3), ["persist:first", "open:second", "persist:s
   "bot-initiated interactive opens must flush the previous chat first");
 
 events.length = 0;
+const archiveEventsBeforeScroll = outcomes.length;
 await session.scroll(300);
 assert.deepEqual(events.slice(0, 3), ["persist:second", "scroll", "persist:second"],
   "live scrolling must save both the outgoing and newly rendered view");
-assert.ok(!outcomes.at(-1).reason, "scroll remains a background save without a noisy archive event");
+assert.equal(outcomes.length, archiveEventsBeforeScroll,
+  "scroll remains a background save without a noisy archive event");
 
 console.log("Live archive regression passed: click, bot open, failed save, history scroll.");
