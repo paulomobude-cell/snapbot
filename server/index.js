@@ -337,6 +337,7 @@ io.on("connection", (socket) => {
   }));
   socket.on("screen:stop", ack(stopWatching));
   socket.on("screen:select-page", ack((p) => entry(p).session.selectScreenPage(p.pageId)));
+  socket.on("screen:refresh", ack((p) => entry(p).session.refreshScreen({ hard: p.hard === true })));
   socket.on("disconnect", stopWatching);
   socket.on("screen:click", ack((p) => entry(p).session.click(Number(p.x), Number(p.y))));
   socket.on("screen:type", ack((p) => entry(p).session.type(String(p.text))));

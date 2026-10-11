@@ -10,6 +10,11 @@ function makePage(host) {
     screenshot: async () => Buffer.from("fake-jpeg"),
     viewport: () => ({ width: 1920, height: 1080 }),
     bringToFront: async () => calls.push(host + ":front"),
+    reload: async () => calls.push(host + ":reload"),
+    createCDPSession: async () => ({
+      send: async (name, args) => calls.push(host + ":" + name + (args?.ignoreCache ? ":ignoreCache" : "")),
+      detach: async () => calls.push(host + ":detach"),
+    }),
     mouse: {
       click: async (x, y) => calls.push(host + ":click:" + x + "," + y),
       wheel: async (d) => calls.push(host + ":wheel:" + d.deltaY),
@@ -54,12 +59,23 @@ await session.click(.5, .5);
 assert.ok(calls.includes("accounts.google.com:click:960,540"));
 
 await session.selectScreenPage(frames.at(-1).pages.find(p => p.site === "accounts.snapchat.com").id);
+await session.refreshScreen();
+assert.ok(calls.includes("accounts.snapchat.com:reload"));
+await session.refreshScreen({ hard: true });
+assert.ok(calls.includes("accounts.snapchat.com:Network.clearBrowserCache"));
+assert.ok(calls.includes("accounts.snapchat.com:Page.reload:ignoreCache"));
 await session.scroll(5000);
 assert.ok(calls.includes("accounts.snapchat.com:wheel:1400"));
 await assert.rejects(() => session.click(-1, 3), /coordinates/);
 await assert.rejects(() => session.press("Control+P"), /Unsupported/);
 await assert.rejects(() => session.type("x".repeat(2100)), /characters/);
 
+session.status = "connected";
+session.bot.visibleChatId = async () => "current";
+session.archiveLiveChat = async () => ({ captured: false });
+await assert.rejects(() => session.refreshScreen(), /Refresh cancelled/);
+assert.equal(calls.filter(c => c === "accounts.snapchat.com:reload").length, 1,
+  "blocked refresh must not reload a chat whose archive failed");
 await session.removeViewer();
 assert.equal(session.screenTimer, null, "capture interval should stop when no viewers");
 console.log("Interactive live-browser regression checks passed: tabs, popup, clicking, text, keys, scroll, validation, teardown.");

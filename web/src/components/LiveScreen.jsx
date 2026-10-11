@@ -14,6 +14,7 @@ export default function LiveScreen({ account, status, statusError, socket, call,
   const [input, setInput] = useState("");
   const [hiddenInput, setHiddenInput] = useState(false);
   const [typing, setTyping] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [credentials, setCredentials] = useState({
     username: account.username || "", password: "", remember: !!account.remembered,
   });
@@ -149,6 +150,18 @@ export default function LiveScreen({ account, status, statusError, socket, call,
     finally { setTyping(false); }
   };
 
+  const refreshRemote = async hard => {
+    if (refreshing) return;
+    if (hard && !window.confirm("Hard refresh the remote browser tab? This bypasses its cache but keeps your login. Unsaved disappearing messages may be lost. Continue?")) return;
+    setRefreshing(true);
+    try {
+      await send("screen:refresh", { hard });
+      setScreen(previous => ({ ...previous, frame: null, capturedAt: 0 }));
+      toast(hard ? "Remote browser hard-refreshed" : "Remote browser refreshed", "success");
+    } catch { /* send already shows the error */ }
+    finally { setRefreshing(false); }
+  };
+
   const selectTab = async id => {
     await send("screen:select-page", { pageId: id }).catch(() => {});
     viewportRef.current?.scrollTo({ top: 0, left: 0 });
@@ -260,8 +273,12 @@ export default function LiveScreen({ account, status, statusError, socket, call,
                   onClick={() => setZoom(v => Math.min(4, +(v + 0.5).toFixed(1)))}>+ Zoom</button>
                 <button type="button" className="btn small"
                   onClick={() => setZoom(1)}>Fit</button>
+                <button type="button" className="btn small" disabled={refreshing}
+                  onClick={() => void refreshRemote(false)}>{refreshing ? "Refreshing…" : "Refresh tab"}</button>
+                <button type="button" className="btn small" disabled={refreshing}
+                  onClick={() => void refreshRemote(true)}>Hard refresh tab</button>
                 <button type="button" className="btn small"
-                  onClick={() => void send("account:restart").catch(() => {})}>Restart</button>
+                  onClick={() => void send("account:restart").catch(() => {})}>Restart browser</button>
                 {fullscreen ? <button type="button" className="btn small" onClick={() => void exitFullscreen()}>
                   Exit fullscreen</button>
                   : <button type="button" className="btn small" onClick={() => void enterFullscreen()}>
