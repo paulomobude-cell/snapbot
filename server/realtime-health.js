@@ -68,3 +68,13 @@ export function createRealtimeTracker(now = () => Date.now()) {
     },
   };
 }
+
+export function shouldRecoverRealtime(health, { viewers = 0, backfillRunning = false,
+  sinceLastAttemptMs = Infinity, minDisconnectedMs = 120000, cooldownMs = 15 * 60000 } = {}) {
+  // No WebSocket does not mean failure: Snapchat can switch transport.
+  // Only act on a confirmed, previously established connection that closed
+  // and failed to reconnect. Never reload under an active Live Screen viewer.
+  return health?.state === "disconnected" &&
+    health.disconnectedForMs >= minDisconnectedMs &&
+    viewers === 0 && !backfillRunning && sinceLastAttemptMs >= cooldownMs;
+}
