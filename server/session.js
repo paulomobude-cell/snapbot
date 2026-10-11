@@ -851,6 +851,42 @@ export default class Session extends EventEmitter {
     }
   }
 
+  // Refresh the actual remote Chromium tab, never just the mirrored JPEG.
+  // Hard refresh bypasses its HTTP cache but deliberately keeps authentication
+  // cookies, local storage and browser profile intact.
+  async refreshScreen({ hard = false } = {}) {
+    return this.run(async () => {
+      const page = await this.activeScreenPage();
+      if (!page || page.isClosed?.()) throw new Error("Browser page not ready");
+      if (page === this.bot?.page && this.status === "connected" && this.bot.visibleChatId) {
+        const chatId = await this.bot.visibleChatId().catch(() => null);
+        if (chatId) {
+          const archived = await this.archiveLiveChat(chatId, "before_refresh");
+          if (!archived?.captured)
+            throw new Error("Refresh cancelled: the open chat could not be archived. Retry archiving before refreshing.");
+        }
+      }
+      if (hard) {
+        const cdp = await page.createCDPSession();
+        try {
+          await cdp.send("Network.enable");
+          await cdp.send("Network.clearBrowserCache");
+          await cdp.send("Page.enable");
+          await cdp.send("Page.reload", { ignoreCache: true });
+        } finally {
+          await cdp.detach().catch(() => {});
+        }
+      } else {
+        await page.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
+      }
+      this.lastScreenHash = null;
+      this.lastScreenSentAt = 0;
+      // The next screenshot loop will show the newly loaded page.
+      // A refresh is not a browser/profile restart and retains login state.
+      return { refreshed: true, hard };
+    });
+  }
+
   async screenshot() {
     const page = await this.activeScreenPage();
     return page ? page.screenshot({ type: "jpeg", quality: 60 }) : null;
