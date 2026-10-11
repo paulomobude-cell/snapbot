@@ -50,6 +50,12 @@ session.bot = {
   typeMessage: async () => events.push("type"),
 };
 session.screenPage = page;
+const mediaNetworkModes = [];
+const originalReadBuffers = session.readMediaBuffers.bind(session);
+session.readMediaBuffers = async (items, options) => {
+  mediaNetworkModes.push(!!options.allowNetwork);
+  return originalReadBuffers(items, options);
+};
 const outcomes = [];
 session.on("chat:archive", data => outcomes.push(data));
 
@@ -58,6 +64,8 @@ assert.deepEqual(events.slice(0, 3), ["persist:first", "click", "persist:second"
   "visible content is committed before navigation and newly opened chat is committed immediately");
 assert.equal(outcomes.at(-1).captured, true);
 assert.equal(outcomes.at(-1).complete, true);
+assert.deepEqual(mediaNetworkModes.slice(0, 2), [true, true],
+  "browser-opened chats must capture loaded HTTPS as well as blob media");
 
 events.length = 0;
 current = "first";
