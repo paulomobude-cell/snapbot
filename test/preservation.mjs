@@ -53,6 +53,8 @@ try {
 
   const action = await entry.session.syncChat("sam", { interactive:true });
   assert.equal(action.captured, true);
+  assert.equal(action.partial, true, "unopened view-once Snap must make completeness false");
+  assert.ok(action.media.viewOnceSkipped >= 1);
   assert.equal(entry.session.bot.lastOpenedId, "sam");
   let messages = await accounts.messages(acc.id, "sam");
   const photo = messages.find(m => m.kind === "media");
