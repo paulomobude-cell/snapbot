@@ -7,6 +7,8 @@ on:
     paths:
       - 'snapbot.js'
       - 'server/session.js'
+      - 'server/realtime-health.js'
+      - 'test/realtime-browser.mjs'
       - 'server/index.js'
       - 'server/accounts.js'
       - 'test/live-screen.mjs'
@@ -29,6 +31,7 @@ jobs:
       - run: npm ci
       - run: node --check snapbot.js
       - run: node --check server/session.js
+      - run: node --check server/realtime-health.js
       - run: node test/login.mjs
       - run: node test/live-screen.mjs
       - run: npm test
