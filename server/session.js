@@ -331,6 +331,10 @@ export default class Session extends EventEmitter {
   }
 
   async syncChat(chatId, { interactive = false, fromBackfill = false, serialized = false } = {}) {
+    // Hold the same browser queue through reading AND durable storage. Without
+    // this, a second click could unmount a Snap while media is still being saved.
+    if (!serialized)
+      return this.run(() => this.syncChat(chatId, { interactive, fromBackfill, serialized: true }));
     if (interactive && this.backfill?.status === "running" && !fromBackfill)
       throw new Error("Archive job running. Wait or cancel it first.");
     // Live Screen interactions already hold the browser queue; enqueueing
@@ -354,8 +358,11 @@ export default class Session extends EventEmitter {
           ? await this.bot.visibleChatId().catch(() => null) : null;
         if (previous && previous !== chatId) {
           const prior = await this.syncChat(previous, { serialized: true });
-          if (!prior.captured) diagnostic("chat_sync_failed", { accountId: this.accountId,
-            chatId: previous, mode: "before_navigation", stage: "capture", reason: prior.reason });
+          if (!prior.captured) {
+            diagnostic("chat_sync_failed", { accountId: this.accountId,
+              chatId: previous, mode: "before_navigation", stage: "capture", reason: prior.reason });
+            throw new Error("Previous chat could not be archived; refusing to navigate away from its content.");
+          }
         }
         if (!(await this.bot.openChat(chatId)))
           return { items: null, stage: "open", reason: this.bot.lastChatOpenReason || "Could not open conversation in Snapchat Web" };
