@@ -98,7 +98,15 @@ export default class Session extends EventEmitter {
           await bot.blockRequests(this.config.blockedRequests);
         }
         if (bot.installMediaCapture) await bot.installMediaCapture();
-        if (bot.installRealtimeMonitor) await bot.installRealtimeMonitor();
+        // Diagnostics must never prevent an otherwise healthy login.
+        if (bot.installRealtimeMonitor) {
+          try { await bot.installRealtimeMonitor(); }
+          catch (error) {
+            diagnostic("browser_realtime_probe_failed", {
+              accountId: this.accountId, reason: classifyDiagnosticError(error),
+            });
+          }
+        }
       };
       await bot.launchSnapchat({
         headless: this.config.headless,
