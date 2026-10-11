@@ -119,13 +119,14 @@ function reducer(state, a) {
 }
 
 // One socket to the backend; everything it pushes lands in a single reducer.
-export function useBackend(settings, { onMessage }) {
+export function useBackend(settings, { onMessage, onArchive }) {
   const [state, dispatch] = useReducer(reducer, initial);
   const [socket, setSocket] = useState(null);
   const [conn, setConn] = useState({ connected: false, error: "" });
   const [now, setNow] = useState(Date.now());
-  const handlers = useRef({ onMessage, view: null });
+  const handlers = useRef({ onMessage, onArchive, view: null });
   handlers.current.onMessage = onMessage;
+  handlers.current.onArchive = onArchive;
 
   useEffect(() => {
     const s = io(settings.url, { auth: { token: settings.token } });
@@ -152,6 +153,7 @@ export function useBackend(settings, { onMessage }) {
     s.on("backfill:progress", (d) => dispatch({ type: "backfill:progress", ...d }));
     s.on("activity:list", (d) => dispatch({ type: "activity:list", ...d }));
     s.on("activity", (d) => dispatch({ type: "activity", ...d }));
+    s.on("chat:archive", d => handlers.current.onArchive?.(d));
     setSocket(s);
     return () => s.disconnect();
   }, [settings]);
