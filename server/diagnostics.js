@@ -12,6 +12,7 @@ const numericFields = new Set([
   "snap", "image", "video", "audio", "media", "stored", "reused", "unavailable",
   "retryDeferred", "viewOnceSkipped", "buffered", "newMessages", "elapsedMs",
   "pages", "reachedTop", "truncated", "reordered",
+  "activeSockets", "socketErrors", "disconnectedSeconds", "incomingFrames", "chromeMajor",
   "visible", "audioElements", "audioSources", "loadingPlaceholders", "voiceControls",
 ]);
 const stringFields = new Set(["mode", "stage", "reason", "provider", "site"]);

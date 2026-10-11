@@ -7,6 +7,7 @@ import path from "path";
 import crypto from "crypto";
 import SnapBot from "../snapbot.js";
 import { sniffType } from "./media.js";
+import { shouldRecoverRealtime } from "./realtime-health.js";
 
 const LOGIN_URL = "https://www.snapchat.com/?original_referrer=none";
 const LOGIN_FORM = '#ai_input, input[name="accountIdentifier"]';
@@ -55,6 +56,8 @@ export default class Session extends EventEmitter {
     this.screenBusy = false;
     this.lastScreenHash = null;
     this.lastScreenSentAt = 0;
+    this.lastRealtimeSample = 0;
+    this.lastRealtimeRecoveryAttempt = 0;
   }
 
   setStatus(status, error = null) {
@@ -95,6 +98,15 @@ export default class Session extends EventEmitter {
           await bot.blockRequests(this.config.blockedRequests);
         }
         if (bot.installMediaCapture) await bot.installMediaCapture();
+        // Diagnostics must never prevent an otherwise healthy login.
+        if (bot.installRealtimeMonitor) {
+          try { await bot.installRealtimeMonitor(); }
+          catch (error) {
+            diagnostic("browser_realtime_probe_failed", {
+              accountId: this.accountId, reason: classifyDiagnosticError(error),
+            });
+          }
+        }
       };
       await bot.launchSnapchat({
         headless: this.config.headless,
@@ -108,6 +120,11 @@ export default class Session extends EventEmitter {
           "--use-fake-ui-for-media-stream",
           "--use-fake-device-for-media-stream",
           "--window-size=1920,1080",
+          // Keep Snapchat's realtime transport and reconnect timers alive even
+          // when its Chrome tab is backgrounded by another login popup.
+          "--disable-background-timer-throttling",
+          "--disable-renderer-backgrounding",
+          "--disable-backgrounding-occluded-windows",
         ],
       });
       if (this.status === "stopped" || this.bot !== bot) {
@@ -226,6 +243,12 @@ export default class Session extends EventEmitter {
 
   async onLoggedIn() {
     this.setStatus("connected");
+    // Record only the Chromium major version, never raw UA/profile data.
+    if (this.bot?.page?.evaluate) {
+      const chromeMajor = await this.run(() => this.bot.page.evaluate(() =>
+        Number(/Chrome\/(\d+)/.exec(navigator.userAgent)?.[1] || 0))).catch(() => 0);
+      if (chromeMajor) diagnostic("browser_identity", { accountId: this.accountId, chromeMajor });
+    }
     await this.run(() => this.bot.handlePopup());
     if (this.bot.watchChatList) {
       await this.run(() => this.bot.watchChatList(() => this.signalSidebarActivity())).catch(error =>
@@ -271,8 +294,51 @@ export default class Session extends EventEmitter {
         console.error("Sync failed", error.message);
       }
     } finally {
+      // Inspect even after a failed DOM sync: a page can keep rendering old
+      // elements while its realtime connection is already broken.
+      await this.inspectRealtimeHealth().catch(error =>
+        diagnostic("browser_realtime_probe_failed", { accountId: this.accountId,
+          reason: classifyDiagnosticError(error) }));
       this.syncRunning = false;
       if (this.status === "connected") this.scheduleLoop(this.sidebarDirty ? 200 : this.config.syncIntervalMs);
+    }
+  }
+
+  async inspectRealtimeHealth() {
+    if (this.status !== "connected" || !this.bot?.getRealtimeHealth) return;
+    const health = this.bot.getRealtimeHealth();
+    const now = Date.now();
+    // Sample privacy-safe connectivity counters, not browser URLs or frames.
+    if (now - this.lastRealtimeSample >= 60000) {
+      this.lastRealtimeSample = now;
+      diagnostic("browser_realtime_health", {
+        accountId: this.accountId, stage: health.state,
+        activeSockets: health.activeSockets, socketErrors: health.failures,
+        disconnectedSeconds: Math.round(health.disconnectedForMs / 1000),
+        incomingFrames: health.incomingFrames,
+      });
+    }
+    if (!shouldRecoverRealtime(health, {
+      viewers: this.viewers,
+      backfillRunning: this.backfill?.status === "running",
+      sinceLastAttemptMs: this.lastRealtimeRecoveryAttempt
+        ? now - this.lastRealtimeRecoveryAttempt : Infinity,
+    })) return;
+    this.lastRealtimeRecoveryAttempt = now;
+    diagnostic("browser_realtime_recover_attempt", {
+      accountId: this.accountId, stage: "socket_disconnected",
+      disconnectedSeconds: Math.round(health.disconnectedForMs / 1000),
+    });
+    try {
+      // Only after a proven disconnected socket (not merely an idle chat).
+      // Preserve opened content, and never discard an incomplete archive.
+      await this.refreshScreen({ hard: true, primary: true, requireComplete: true });
+      diagnostic("browser_realtime_recovered", { accountId: this.accountId, stage: "reloaded" });
+    } catch (error) {
+      diagnostic("browser_realtime_recover_deferred", {
+        accountId: this.accountId, stage: "archive_or_reload_failed",
+        reason: classifyDiagnosticError(error),
+      });
     }
   }
 
@@ -854,16 +920,16 @@ export default class Session extends EventEmitter {
   // Refresh the actual remote Chromium tab, never just the mirrored JPEG.
   // Hard refresh bypasses its HTTP cache but deliberately keeps authentication
   // cookies, local storage and browser profile intact.
-  async refreshScreen({ hard = false } = {}) {
+  async refreshScreen({ hard = false, primary = false, requireComplete = false } = {}) {
     return this.run(async () => {
-      const page = await this.activeScreenPage();
+      const page = primary ? this.bot?.page : await this.activeScreenPage();
       if (!page || page.isClosed?.()) throw new Error("Browser page not ready");
       if (page === this.bot?.page && this.status === "connected" && this.bot.visibleChatId) {
         const chatId = await this.bot.visibleChatId().catch(() => null);
         if (chatId) {
           const archived = await this.archiveLiveChat(chatId, "before_refresh");
-          if (!archived?.captured)
-            throw new Error("Refresh cancelled: the open chat could not be archived. Retry archiving before refreshing.");
+          if (!archived?.captured || (requireComplete && !archived.complete))
+            throw new Error("Refresh cancelled: the open chat was not fully archived. Retry archiving before refreshing.");
         }
       }
       if (hard) {
@@ -881,6 +947,17 @@ export default class Session extends EventEmitter {
       }
       this.lastScreenHash = null;
       this.lastScreenSentAt = 0;
+      this.lastChatDiscovery = 0;
+      // A hard/ordinary page reload destroys the injected sidebar MutationObserver.
+      // Restore it after login/chat UI renders; periodic sync remains available
+      // if the refreshed page needs CAPTCHA or the selector has changed.
+      if (page === this.bot?.page && this.status === "connected" && this.bot?.watchChatList) {
+        try {
+          await page.waitForSelector("div.ReactVirtualized__Grid__innerScrollContainer",
+            { timeout: 10000 });
+          await this.bot.watchChatList(() => this.signalSidebarActivity());
+        } catch { /* page may be logging in; syncChats will detect it */ }
+      }
       // The next screenshot loop will show the newly loaded page.
       // A refresh is not a browser/profile restart and retains login state.
       return { refreshed: true, hard };
