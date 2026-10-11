@@ -235,6 +235,12 @@ export default class Session extends EventEmitter {
 
   async onLoggedIn() {
     this.setStatus("connected");
+    // Record only the Chromium major version, never raw UA/profile data.
+    if (this.bot?.page?.evaluate) {
+      const chromeMajor = await this.run(() => this.bot.page.evaluate(() =>
+        Number(/Chrome\/(\d+)/.exec(navigator.userAgent)?.[1] || 0))).catch(() => 0);
+      if (chromeMajor) diagnostic("browser_identity", { accountId: this.accountId, chromeMajor });
+    }
     await this.run(() => this.bot.handlePopup());
     if (this.bot.watchChatList) {
       await this.run(() => this.bot.watchChatList(() => this.signalSidebarActivity())).catch(error =>
@@ -274,13 +280,17 @@ export default class Session extends EventEmitter {
     this.sidebarDirty = false;
     try {
       await this.syncChats();
-      await this.inspectRealtimeHealth();
     } catch (error) {
       if (this.status === "connected") {
         diagnostic("sync_loop_failed", { accountId: this.accountId, stage: "tick", reason: classifyDiagnosticError(error), site: classifyDiagnosticSite(error) });
         console.error("Sync failed", error.message);
       }
     } finally {
+      // Inspect even after a failed DOM sync: a page can keep rendering old
+      // elements while its realtime connection is already broken.
+      await this.inspectRealtimeHealth().catch(error =>
+        diagnostic("browser_realtime_probe_failed", { accountId: this.accountId,
+          reason: classifyDiagnosticError(error) }));
       this.syncRunning = false;
       if (this.status === "connected") this.scheduleLoop(this.sidebarDirty ? 200 : this.config.syncIntervalMs);
     }
