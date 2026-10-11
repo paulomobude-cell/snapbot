@@ -359,7 +359,8 @@ export default class Session extends EventEmitter {
         const previous = this.bot.visibleChatId
           ? await this.bot.visibleChatId().catch(() => null) : null;
         if (previous && previous !== chatId) {
-          const prior = await this.syncChat(previous, { serialized: true });
+          const prior = await this.syncChat(previous,
+            { serialized: true, captureAvailableMedia: true });
           if (!prior.captured) {
             diagnostic("chat_sync_failed", { accountId: this.accountId,
               chatId: previous, mode: "before_navigation", stage: "capture", reason: prior.reason });
