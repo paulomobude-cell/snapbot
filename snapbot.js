@@ -7,6 +7,7 @@ import fs from "fs";
 import fsPromise from "fs/promises";
 import { discoverChats } from "./server/chat-discovery.js";
 import { extractVisibleMessages } from "./server/chat-reader.js";
+import { createRealtimeTracker } from "./server/realtime-health.js";
 
 function delay(time) {
   return new Promise(function (resolve) {
@@ -20,6 +21,8 @@ export default class SnapBot {
   constructor() {
     this.page = null;
     this.browser = null;
+    this.realtimeTracker = null;
+    this.realtimeCdp = null;
   }
   async launchSnapchat(obj, cookiefile) {
     try {
@@ -57,10 +60,9 @@ export default class SnapBot {
         height: 1080,
         deviceScaleFactor: 1,
       });
-      await this.page.setUserAgent(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-      );
-
+      // Puppeteer Stealth already supplies an appropriate current Chromium UA.
+      // Forcing Chrome/114 on a newer browser creates mismatched client hints
+      // and may break Snapchat Web's compatibility/reconnection logic.
       //gets the version
       this.page.on("console", (msg) => {
         if (msg.type() === "log") {
@@ -93,6 +95,35 @@ export default class SnapBot {
       console.error(`Error while Starting Snapchat : ${error}`);
       throw error;
     }
+  }
+
+  // Inspect actual Snapchat websocket handshakes. No URLs/frames are retained.
+  async installRealtimeMonitor(page = this.page) {
+    if (!page?.createCDPSession || this.realtimeCdp) return false;
+    const client = await page.createCDPSession();
+    try {
+      await client.send("Network.enable");
+      const tracker = createRealtimeTracker();
+      client.on("Network.webSocketCreated", data => tracker.created(data));
+      client.on("Network.webSocketHandshakeResponseReceived", data => tracker.handshake(data));
+      client.on("Network.webSocketFrameReceived", data => tracker.received(data));
+      client.on("Network.webSocketFrameError", data => tracker.error(data));
+      client.on("Network.webSocketClosed", data => tracker.closed(data));
+      page.on?.("framenavigated", frame => {
+        if (frame === page.mainFrame?.()) tracker.reset();
+      });
+      this.realtimeCdp = client;
+      this.realtimeTracker = tracker;
+      return true;
+    } catch (error) {
+      await client.detach().catch(() => {});
+      throw error;
+    }
+  }
+
+  getRealtimeHealth() {
+    return this.realtimeTracker?.snapshot() || { state: "unknown", activeSockets: 0,
+      failures: 0, incomingFrames: 0, disconnectedForMs: 0 };
   }
 
   async login(credentials) {
