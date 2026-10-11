@@ -7,6 +7,7 @@ import { mirrorPoint } from "../mirror.js";
 export default function LiveScreen({ account, status, statusError, socket, call, onClose, toast }) {
   const accountId = account.id;
   const [screen, setScreen] = useState({ frame: null, pages: [], pageId: null, width: 1920, height: 1080 });
+  const [clock, setClock] = useState(Date.now());
   const [fullscreen, setFullscreen] = useState(false);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -48,7 +49,13 @@ export default function LiveScreen({ account, status, statusError, socket, call,
   }, [fullscreen, controlsOpen]);
 
   useEffect(() => {
+    const t = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
     if (!socket) return;
+    setScreen({ frame: null, pages: [], pageId: null, width: 1920, height: 1080 });
     const onFrame = data => {
       if (data.accountId !== accountId) return;
       setScreen({
@@ -57,9 +64,13 @@ export default function LiveScreen({ account, status, statusError, socket, call,
         pageId: data.pageId || null,
         width: data.width || 1920,
         height: data.height || 1080,
+        capturedAt: data.capturedAt || Date.now(),
       });
     };
-    const start = () => socket.emit("screen:start", { accountId });
+    const start = () => {
+      setScreen({ frame: null, pages: [], pageId: null, width: 1920, height: 1080 });
+      socket.emit("screen:start", { accountId });
+    };
     socket.on("screen:frame", onFrame);
     socket.on("connect", start);
     start();
@@ -157,6 +168,9 @@ export default function LiveScreen({ account, status, statusError, socket, call,
         </header>
       )}
 
+      {screen.frame && clock - (screen.capturedAt || 0) > 12000 && (
+        <div role="status" className="alert slim">Live Screen has not received a fresh frame for {Math.floor((clock - screen.capturedAt) / 1000)}s.</div>
+      )}
       <div className="mirror-viewport" ref={viewportRef} aria-label="Interactive Snapchat browser mirror">
         <div className="mirror-canvas"
           style={{ width: `${zoom * 100}%`, height: `${zoom * 100}%` }}
