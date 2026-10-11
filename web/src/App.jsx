@@ -121,7 +121,11 @@ function Dashboard({ settings, user, onDisconnect }) {
     n.onclick = () => { window.focus(); n.close(); };
   }, [notify]);
 
-  const { state, dispatch, socket, conn, now, call, setView } = useBackend(settings, { onMessage });
+  const onArchive = useCallback(({ captured, partial, reason, media }) => {
+    if (!captured) toast("Live browser opened a chat but could not archive it: " + (reason || "not rendered"), "error");
+    else if (partial) toast("Chat text archived, but media/history is incomplete (" + (media?.unavailable || 0) + " unavailable, " + (media?.failed || 0) + " failures, " + (media?.viewOnceSkipped || 0) + " unopened Snaps).", "error");
+  }, [toast]);
+  const { state, dispatch, socket, conn, now, call, setView } = useBackend(settings, { onMessage, onArchive });
   const { accounts } = state;
 
   // keep a valid account selected
@@ -194,7 +198,7 @@ function Dashboard({ settings, user, onDisconnect }) {
       call("chat:sync", { accountId, chatId: id, confirmReadRisk: true })
         .then(result => {
           if (!result?.captured) toast(result?.reason || "Snapchat conversation could not be read", "error");
-          else if (result.history?.truncated) toast("Saved visible content, but older chat history may be incomplete.", "error");
+          else if (result.partial) toast("Saved available chat content, but some media, Snaps or history could not be archived.", "error");
         })
         .catch(error => toast(error.message, "error"));
     }
