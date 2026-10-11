@@ -8,7 +8,7 @@
     "start": "node --no-warnings=ExperimentalWarning server/index.js",
     "dev": "MOCK=true API_TOKEN=dev node --no-warnings=ExperimentalWarning server/index.js",
     "bot": "node index.js",
-    "test": "node --no-warnings=ExperimentalWarning test/preservation.mjs && node test/history-scan.mjs && node test/live-archive.mjs"
+    "test": "node --no-warnings=ExperimentalWarning test/preservation.mjs && node test/history-scan.mjs && node test/live-archive.mjs && node test/realtime-browser.mjs"
   },
   "author": "Roger Rodrigues",
   "dependencies": {
