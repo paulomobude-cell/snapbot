@@ -350,7 +350,8 @@ export default class Session extends EventEmitter {
       if (interactive) {
         // Flush the current open conversation BEFORE navigating away. This
         // protects content received between the previous poll and this click.
-        const previous = await this.bot.visibleChatId?.().catch(() => null);
+        const previous = this.bot.visibleChatId
+          ? await this.bot.visibleChatId().catch(() => null) : null;
         if (previous && previous !== chatId) {
           const prior = await this.syncChat(previous, { serialized: true });
           if (!prior.captured) diagnostic("chat_sync_failed", { accountId: this.accountId,
@@ -836,6 +837,40 @@ export default class Session extends EventEmitter {
     return page ? page.screenshot({ type: "jpeg", quality: 60 }) : null;
   }
 
+  // Live Screen click coordinates represent an explicit user navigation.
+  // Recognize the selected Snapchat row BEFORE clicking, save any currently
+  // visible chat, then archive the destination while holding the browser queue.
+  async archiveLiveChat(chatId, source) {
+    if (!chatId || this.status !== "connected") return;
+    let result;
+    try { result = await this.syncChat(chatId, { serialized: true }); }
+    catch (error) { result = { captured: false, reason: String(error.message || error) }; }
+    const detail = { chatId, source, captured: !!result.captured,
+      complete: !!result.complete, partial: !!result.partial, reason: result.reason || null,
+      media: result.media || null };
+    this.emit("chat:archive", detail);
+    diagnostic(result.captured && !result.partial ? "chat_live_archived" : "chat_live_archive_partial",
+      { accountId: this.accountId, chatId, mode: source,
+        stage: result.captured ? "partial_or_complete" : "failed",
+        reason: result.reason || (result.partial ? "incomplete_media_or_history" : "ok") });
+    return result;
+  }
+
+  async liveTargetAt(page, x, y) {
+    if (page !== this.bot?.page || typeof page.evaluate !== "function") return null;
+    return page.evaluate(({ x, y }) => {
+      const node = document.elementFromPoint(x, y);
+      const row = node?.closest?.("[role='listitem']");
+      const title = row?.querySelector?.("span[id^='title-']");
+      const conversation = node?.closest?.("[id^='cv-']");
+      const composer = node?.closest?.("input, textarea, [contenteditable], [role='textbox']");
+      return {
+        chatId: title?.id?.startsWith("title-") ? title.id.slice(6) : null,
+        insideChat: !composer && conversation?.id?.startsWith("cv-") ? conversation.id.slice(3) : null,
+      };
+    }, { x, y }).catch(() => null);
+  }
+
   async click(x, y) {
     if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
       throw new Error("Invalid live screen coordinates");
@@ -844,7 +879,31 @@ export default class Session extends EventEmitter {
       const page = await this.activeScreenPage();
       if (!page) throw new Error("Browser page not ready");
       const { width, height } = page.viewport?.() || { width: 1280, height: 720 };
-      await page.mouse.click(x * width, y * height);
+      const px = x * width, py = y * height;
+      const target = await this.liveTargetAt(page, px, py);
+      const current = page === this.bot?.page && this.bot?.visibleChatId
+        ? await this.bot.visibleChatId().catch(() => null) : null;
+      if (target?.chatId && current && target.chatId !== current) {
+        const previous = await this.archiveLiveChat(current, "before_navigation");
+        if (!previous?.captured)
+          throw new Error("Cannot verify the open chat was archived. Navigation stopped to protect its messages.");
+      }
+      await page.mouse.click(px, py);
+      if (page !== this.bot?.page || !this.bot?.visibleChatId) return;
+      if (target?.chatId) {
+        // Snapchat renders the new pane asynchronously after row selection.
+        for (let attempt = 0; attempt < 15; attempt++) {
+          if (await this.bot.visibleChatId().catch(() => null) === target.chatId) break;
+          await delay(200);
+        }
+      }
+      const visible = await this.bot.visibleChatId().catch(() => null);
+      const toArchive = target?.chatId || (visible && visible !== current ? visible : target?.insideChat);
+      if (toArchive && visible === toArchive) await this.archiveLiveChat(toArchive, "live_click");
+      else if (target?.chatId) this.emit("chat:archive", {
+        chatId: target.chatId, source: "live_click", captured: false,
+        reason: "Snapchat did not render the selected chat after clicking it",
+      });
     });
   }
 
@@ -863,7 +922,18 @@ export default class Session extends EventEmitter {
     return this.run(async () => {
       const page = await this.activeScreenPage();
       if (!page) throw new Error("Browser page not ready");
+      const previous = page === this.bot?.page && this.bot?.visibleChatId
+        ? await this.bot.visibleChatId().catch(() => null) : null;
       await page.keyboard.press(key);
+      if (key === "Enter" && page === this.bot?.page && this.bot?.visibleChatId) {
+        let visible = await this.bot.visibleChatId().catch(() => null);
+        for (let attempt = 0; attempt < 8 && !visible; attempt++) {
+          await delay(200);
+          visible = await this.bot.visibleChatId().catch(() => null);
+        }
+        if (visible && visible !== previous) await this.archiveLiveChat(visible, "live_keyboard");
+        else if (visible) await this.archiveLiveChat(visible, "live_keyboard");
+      }
     });
   }
 
