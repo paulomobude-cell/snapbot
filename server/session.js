@@ -54,6 +54,7 @@ export default class Session extends EventEmitter {
     this.screenPageCounter = 0;
     this.screenBusy = false;
     this.lastScreenHash = null;
+    this.lastScreenSentAt = 0;
   }
 
   setStatus(status, error = null) {
@@ -292,7 +293,10 @@ export default class Session extends EventEmitter {
     for (const chat of visible) merged.set(chat.id, {
       ...chat, statusSource: "snapchat-web", observedAt: Date.now(),
     });
-    const chats = [...merged.values()];
+    const staleAfterMs = Math.max(120000, this.config.fullSyncIntervalMs * 2);
+    const chats = [...merged.values()].map(chat => ({ ...chat,
+      statusStale: !chat.observedAt || Date.now() - chat.observedAt > staleAfterMs,
+    }));
     this.chats = chats;
     this.emit("chats", chats);
 
@@ -743,8 +747,9 @@ export default class Session extends EventEmitter {
       const fingerprint = crypto.createHash("sha1").update(image)
         .update(pageId || "").update(JSON.stringify(tabs)).digest("hex");
       // Don't repeatedly transfer the same screen when nothing repainted.
-      if (fingerprint === this.lastScreenHash) return;
+      if (fingerprint === this.lastScreenHash && Date.now() - this.lastScreenSentAt < 10000) return;
       this.lastScreenHash = fingerprint;
+      this.lastScreenSentAt = Date.now();
       this.emit("screen:frame", {
         frame: Buffer.from(image).toString("base64"),
         pageId,
@@ -752,6 +757,7 @@ export default class Session extends EventEmitter {
         width: vp.width,
         height: vp.height,
         quality,
+        capturedAt: this.lastScreenSentAt,
       });
     } catch (error) {
       // Navigating pages temporarily destroys their execution context.
@@ -785,6 +791,7 @@ export default class Session extends EventEmitter {
     if (this.screenTimer) clearInterval(this.screenTimer);
     this.screenTimer = null;
     this.lastScreenHash = null;
+    this.lastScreenSentAt = 0;
     if (this.screencast) {
       await this.screencast.send("Page.stopScreencast").catch(() => {});
       await this.screencast.detach().catch(() => {});
