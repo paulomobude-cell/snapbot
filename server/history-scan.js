@@ -46,7 +46,7 @@ export function mergeHistorySnapshots(snapshots) {
 
 export async function collectHistory({
   firstItems, read, scrollOlder, restore, pause = async () => {},
-  capture = async () => new Map(), maxSteps = 20, maxItems = 650,
+  capture = async () => new Map(), onPage = async () => {}, maxSteps = 20, maxItems = 650,
   maxBufferedBytes = 96 * MiB,
 }) {
   if (firstItems === null) return { items: null, buffers: new Map(), pages: 0, reachedTop: false, truncated: false };
@@ -69,6 +69,10 @@ export async function collectHistory({
         buffers.set(sha, media);
         size += media.buffer?.length || 0;
       }
+      // Persist the page while it is still rendered, before any scrolling can
+      // remove view-once or virtualized content. Callback failures abort the
+      // scan rather than falsely reporting a successful archive.
+      if (!same) await onPage(page, batch);
       const items = mergeHistorySnapshots(snapshots);
       if (items.length >= maxItems) { truncated = true; stoppedBy = "item_limit"; break; }
       if (size >= maxBufferedBytes) { truncated = true; stoppedBy = "media_limit"; break; }
